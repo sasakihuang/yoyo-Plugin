@@ -4,6 +4,7 @@
 # fork keeps tracking upstream while we strip ads + rebrand each build.
 # Every removal is ASSERTED afterwards: if upstream restructures and a removal
 # stops matching, the build FAILS LOUDLY instead of silently shipping the ad.
+# Anchors are single-line / whitespace-tolerant so Windows (CRLF) is safe.
 # Usage: REPO_SLUG="you/yoyo-Plugin" BRAND="YOYO Plugin" bash scripts/apply-yoyo.sh
 set -euo pipefail
 
@@ -12,6 +13,7 @@ BRAND="${BRAND:-YOYO Plugin}"
 ASSET_PREFIX="${ASSET_PREFIX:-YOYOPlugin}"
 APP=apps/codex-plus-manager/src/App.tsx
 UPD=crates/codex-plus-core/src/update.rs
+CMD=apps/codex-plus-manager/src-tauri/src/commands.rs
 
 ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -28,12 +30,12 @@ _rep() {  # <file> <FROM> <TO> : literal, global, anchor-checked
 }
 _gone() { ! grep -qF "$2" "$1" || { echo "REMOVAL FAILED in $1 (still present): $2" >&2; exit 7; }; }
 
-echo ">> [1/9] disable in-app ads (推荐内容)"
+echo ">> [1/10] disable in-app ads (推荐内容)"
 _rep crates/codex-plus-core/src/ads.rs \
   '    fetch_ad_list_from_urls(&DEFAULT_AD_LIST_URLS).await' \
   '    Ok(serde_json::json!({ "version": 1, "ads": [] }))'
 
-echo ">> [2/9] point ALL CodexPlusPlus repo links at fork: $REPO_SLUG (keep ScriptMarket)"
+echo ">> [2/10] point ALL CodexPlusPlus repo links at fork: $REPO_SLUG (keep ScriptMarket)"
 grep -rlIF 'BigPizzaV3/CodexPlusPlus' apps crates assets scripts \
   | grep -vE '/node_modules/|/target/|package-lock\.json' \
   | while IFS= read -r f; do
@@ -41,35 +43,41 @@ grep -rlIF 'BigPizzaV3/CodexPlusPlus' apps crates assets scripts \
     done
 _gone "$UPD" 'BigPizzaV3/CodexPlusPlus'
 
-echo ">> [3/9] make in-app updater accept rebranded (YOYO) asset filenames (CRLF-safe)"
+echo ">> [3/10] make in-app updater accept rebranded (YOYO) asset filenames"
 perl -0777 -i -pe 's/\Qname.contains("codex")\E/true/g; s/\Qname.contains("plus")\E/true/g' "$UPD"
 _gone "$UPD" 'name.contains("codex")'
 _gone "$UPD" 'name.contains("plus")'
 
-echo ">> [4/9] rebrand installer asset filenames"
+echo ">> [4/10] simplify provider test result -> 通 / 不通"
+grep -qF '发送 hi，HTTP' "$CMD" || { echo "ANCHOR MISSING: provider test message" >&2; exit 5; }
+perl -0777 -i -pe 's/message: format!\(\s*"已向[^"]*",\s*result\.http_status\s*\)/message: if result.http_status < 400 { "通".to_string() } else { format!("不通（HTTP {}）", result.http_status) }/s' "$CMD"
+_gone "$CMD" '发送 hi，HTTP'
+grep -qF 'message: if result.http_status < 400' "$CMD" || { echo "provider test simplify FAILED" >&2; exit 7; }
+
+echo ">> [5/10] rebrand installer asset filenames"
 _rep scripts/installer/windows/CodexPlusPlus.nsi 'CodexPlusPlus-' "$ASSET_PREFIX-"
 _rep scripts/installer/macos/package-dmg.sh 'CodexPlusPlus-' "$ASSET_PREFIX-"
 
-echo ">> [5/9] remove manager '推荐内容' nav entry"
+echo ">> [6/10] remove manager '推荐内容' nav entry"
 grep -qF 'label: "推荐内容"' "$APP" || { echo "ANCHOR MISSING: 推荐内容 nav" >&2; exit 5; }
 perl -0777 -i -pe 's/\n[ \t]*\{ id: "recommendations",[^}]*\},//g' "$APP"
 _gone "$APP" 'label: "推荐内容"'
 
-echo ">> [6/9] remove manager Overview '官方中转站' (JOJO) ad card"
+echo ">> [7/10] remove manager Overview '官方中转站' (JOJO) ad card"
 grep -qF 'jojocode-overview' "$APP" || { echo "ANCHOR MISSING: jojocode-overview" >&2; exit 5; }
 perl -0777 -i -pe 's{\s*<Panel className="jojocode-overview">.*?</Panel>}{}s' "$APP"
 _gone "$APP" 'jojocode-overview'
 
-echo ">> [7/9] remove About 'Discord' + 'Telegram' community buttons"
+echo ">> [8/10] remove About 'Discord' + 'Telegram' community buttons"
 perl -0777 -i -pe 's!\s*<Button onClick=\{[^}]*discord\.gg[^}]*\}[^>]*>.*?</Button>!!s' "$APP"
 perl -0777 -i -pe 's!\s*<Button onClick=\{[^}]*t\.me/[^}]*\}[^>]*>.*?</Button>!!s' "$APP"
 _gone "$APP" 'discord.gg'
 _gone "$APP" 't.me/'
 
-echo ">> [8/9] brand badge: C++ -> YOYO (inline font-size so it fits)"
+echo ">> [9/10] brand badge: C++ -> YOYO (inline font-size so it fits)"
 _rep "$APP" '<div className="brand-mark">C++</div>' '<div className="brand-mark" style={{ fontSize: "11px", letterSpacing: "-0.3px" }}>YOYO</div>'
 
-echo ">> [9/9] global rebrand: every visible 'Codex++' -> $BRAND"
+echo ">> [10/10] global rebrand: every visible 'Codex++' -> $BRAND"
 grep -rlIF 'Codex++' apps crates assets scripts \
   | grep -vE '/node_modules/|/target/|package-lock\.json' \
   | while IFS= read -r f; do
