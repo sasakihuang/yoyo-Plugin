@@ -2,7 +2,6 @@
 
 > **yoyo Plugin** is an ad-free, rebranded fork of CodexPlusPlus that auto-syncs with upstream daily.
 
-
 <p align="center">
   <img src="docs/images/codex-plus-plus.png" alt="yoyo Plugin icon" width="160">
 </p>
