@@ -41,16 +41,10 @@ grep -rlIF 'BigPizzaV3/CodexPlusPlus' apps crates assets scripts \
     done
 _gone "$UPD" 'BigPizzaV3/CodexPlusPlus'
 
-echo ">> [3/9] make in-app updater accept rebranded (YOYO) asset filenames"
-_rep "$UPD" \
-'    name.contains("codex")
-        && name.contains("plus")
-        && (name.ends_with(".msi")' \
-'    (name.ends_with(".msi")'
-_rep "$UPD" \
-'    name.contains("codex") && name.contains("plus") && name.ends_with(".dmg")' \
-'    name.ends_with(".dmg")'
+echo ">> [3/9] make in-app updater accept rebranded (YOYO) asset filenames (CRLF-safe)"
+perl -0777 -i -pe 's/\Qname.contains("codex")\E/true/g; s/\Qname.contains("plus")\E/true/g' "$UPD"
 _gone "$UPD" 'name.contains("codex")'
+_gone "$UPD" 'name.contains("plus")'
 
 echo ">> [4/9] rebrand installer asset filenames"
 _rep scripts/installer/windows/CodexPlusPlus.nsi 'CodexPlusPlus-' "$ASSET_PREFIX-"
