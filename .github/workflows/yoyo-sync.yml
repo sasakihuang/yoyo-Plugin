@@ -1,0 +1,206 @@
+name: yoyo sync & build
+
+# Daily: check upstream BigPizzaV3/CodexPlusPlus. If changed (or manual run):
+#   1. merge upstream into this fork's default branch (conflict-free: we only
+#      ADD files, never edit upstream source in the repo);
+#   2. apply ad-removal + rebrand AT BUILD TIME (ephemeral, never committed);
+#   3. build Windows + macOS (x64/arm64) installers;
+#   4. publish them as the "latest" release + latest.json so the in-app
+#      updater (pointed at this fork) offers a one-click update.
+# 08:00 Asia/Shanghai = 00:00 UTC. GitHub cron is UTC and best-effort.
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: yoyo-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/BigPizzaV3/CodexPlusPlus.git
+  UPSTREAM_BRANCH: main
+  BRAND: "yoyo Plugin"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure git
+        run: |
+          git config user.name "yoyo-bot"
+          git config user.email "yoyo-bot@users.noreply.github.com"
+      - name: Merge upstream
+        id: merge
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+          BEFORE=$(git rev-parse HEAD)
+          git merge --no-edit -m "yoyo: sync upstream $(date -u +%FT%TZ)" "upstream/${UPSTREAM_BRANCH}"
+          AFTER=$(git rev-parse HEAD)
+          CHANGED=false
+          if [ "$BEFORE" != "$AFTER" ]; then
+            git push origin HEAD
+            CHANGED=true
+            echo "Synced upstream changes."
+          else
+            echo "No upstream changes."
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CHANGED=true
+            echo "Manual dispatch -> forcing build."
+          fi
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          V=$(awk '/^\[workspace.package\]/{f=1} f&&/^version/{gsub(/[^0-9.]/,"",$0);print;exit}' Cargo.toml)
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Upstream version: $V"
+
+  windows:
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install NSIS
+        run: choco install nsis -y
+      - name: Apply yoyo transform (ads off + rebrand + updater -> this fork)
+        shell: bash
+        run: REPO_SLUG="$GITHUB_REPOSITORY" BRAND="$BRAND" bash scripts/apply-yoyo.sh
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: |
+          npm install --package-lock=false
+          npm run vite:build
+      - name: Build binaries
+        run: cargo build --release
+      - name: Build installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/windows/app | Out-Null
+          Copy-Item target/release/codex-plus-plus.exe dist/windows/app/
+          Copy-Item target/release/codex-plus-plus-manager.exe dist/windows/app/
+          $version = "${{ needs.sync.outputs.version }}"
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) { $makensis = "makensis" }
+          Push-Location scripts/installer/windows
+          & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" CodexPlusPlus.nsi
+          Pop-Location
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: dist/windows/*.exe
+
+  macos:
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - arch: arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Apply yoyo transform (ads off + rebrand + updater -> this fork)
+        run: REPO_SLUG="$GITHUB_REPOSITORY" BRAND="$BRAND" bash scripts/apply-yoyo.sh
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: |
+          npm install --package-lock=false
+          npm run vite:build
+      - name: Build binaries
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build DMG
+        run: |
+          VERSION="${{ needs.sync.outputs.version }}"
+          BINARY_DIR="$PWD/target/${{ matrix.target }}/release" \
+            bash scripts/installer/macos/package-dmg.sh "$VERSION" "${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos-${{ matrix.arch }}
+          path: dist/macos/*.dmg
+
+  release:
+    needs: [sync, windows, macos]
+    if: needs.sync.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish ad-free release + latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.sync.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}-noads"
+          gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" dist/*.exe dist/*.dmg --repo "$REPO" --latest \
+            --title "yoyo Plugin ${VERSION} (no-ads)" \
+            --notes "Auto-built ad-free, rebranded build of upstream v${VERSION}. Unsigned - OS may warn on first launch."
+          gh release view "$TAG" --repo "$REPO" --json assets,body,tagName,url > release.json
+          node <<'NODE'
+          const fs = require("fs");
+          const r = JSON.parse(fs.readFileSync("release.json", "utf8"));
+          const repo = process.env.REPO;
+          const tag = r.tagName;
+          const version = tag.replace(/^v/i, "");
+          const base = `https://github.com/${repo}/releases/download/${tag}`;
+          const assets = (r.assets || []).map(a => a.name)
+            .filter(n => n !== "latest.json")
+            .map(n => ({ name: n, url: `${base}/${encodeURIComponent(n)}` }));
+          fs.writeFileSync("latest.json",
+            JSON.stringify({ version: `v${version}`, url: r.url, body: r.body || "", assets }, null, 2) + "\n");
+          NODE
+          gh release upload "$TAG" latest.json --clobber --repo "$REPO"
+          echo "Published $TAG as latest."
+
+  notify:
+    needs: [sync, windows, macos, release]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open an issue on failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create --repo "$REPO" \
+            --title "yoyo sync/build failed ($(date -u +%F))" \
+            --body "Daily sync/build failed - usually upstream renamed an anchor in apply-yoyo.sh, or a build break. Run: $RUN_URL" \
+            || echo "issue creation skipped"
