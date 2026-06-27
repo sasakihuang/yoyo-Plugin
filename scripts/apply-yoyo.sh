@@ -5,7 +5,7 @@
 #   1. Disable in-app ads (推荐内容) at the data source.
 #   2. Point the in-app updater at YOUR fork's releases.
 #   3. Remove the manager's "推荐内容" page + the Overview "官方中转站" (JOJO) ad.
-#   4. Rebrand every visible "Codex++" -> "YOYO Plugin" (+ the C++ badge -> YO).
+#   4. Rebrand every visible "Codex++" -> "YOYO Plugin" (+ the C++ badge -> YOYO).
 # Internal ids (codex-plus-plus binaries, CodexPlusPlus provider, codex-plus-*
 # CSS) use different spellings and are left untouched. Any missing anchor EXITS
 # NON-ZERO so the build fails loudly instead of shipping ads/branding.
@@ -53,8 +53,8 @@ echo ">> [5/7] remove manager Overview '官方中转站' (JOJO) ad card"
 _require "$APP" 'jojocode-overview'
 perl -0777 -i -pe 's{\s*<Panel className="jojocode-overview">.*?</Panel>}{}s' "$APP"
 
-echo ">> [6/7] replace 'C++' brand badge -> YO"
-_rep "$APP" '<div className="brand-mark">C++</div>' '<div className="brand-mark">YO</div>'
+echo ">> [6/7] brand badge: C++ -> YOYO (inline font-size so it fits)"
+_rep "$APP" '<div className="brand-mark">C++</div>' '<div className="brand-mark" style={{ fontSize: "11px", letterSpacing: "-0.3px" }}>YOYO</div>'
 
 echo ">> [7/7] global rebrand: every visible 'Codex++' -> $BRAND"
 grep -rlIF 'Codex++' apps crates assets scripts \
