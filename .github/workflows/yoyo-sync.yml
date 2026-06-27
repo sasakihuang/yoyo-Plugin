@@ -48,7 +48,7 @@ jobs:
           git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
           git fetch --no-tags upstream "$UPSTREAM_BRANCH"
           BEFORE=$(git rev-parse HEAD)
-          git merge --no-edit -m "yoyo: sync upstream $(date -u +%FT%TZ)" "upstream/${UPSTREAM_BRANCH}"
+          git merge -X ours --no-edit -m "yoyo: sync upstream $(date -u +%FT%TZ)" "upstream/${UPSTREAM_BRANCH}"
           AFTER=$(git rev-parse HEAD)
           CHANGED=false
           if [ "$BEFORE" != "$AFTER" ]; then
