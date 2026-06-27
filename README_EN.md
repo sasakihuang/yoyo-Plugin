@@ -1,9 +1,9 @@
-# yoyo Plugin
+# YOYO Plugin
 
-> **yoyo Plugin** is an ad-free, rebranded fork of CodexPlusPlus that auto-syncs with upstream daily.
+> **YOYO Plugin** is an ad-free, rebranded fork of CodexPlusPlus that auto-syncs with upstream daily.
 
 <p align="center">
-  <img src="docs/images/codex-plus-plus.png" alt="yoyo Plugin icon" width="160">
+  <img src="docs/images/codex-plus-plus.png" alt="YOYO Plugin icon" width="160">
 </p>
 
 <p align="center">
@@ -18,22 +18,22 @@
   <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
 
-yoyo Plugin is an external enhancement launcher and manager for the Codex App. It does not modify the original Codex installation. Instead, it starts Codex externally and injects enhancements through the Chromium DevTools Protocol.
+YOYO Plugin is an external enhancement launcher and manager for the Codex App. It does not modify the original Codex installation. Instead, it starts Codex externally and injects enhancements through the Chromium DevTools Protocol.
 
 ## Quick Start
 
 Download the latest installer from [GitHub Releases](https://github.com/sasakihuang/yoyo-Plugin/releases):
 
-- Windows: `YoyoPlugin-*-windows-x64-setup.exe`
-- macOS Intel: `YoyoPlugin-*-macos-x64.dmg`
-- macOS Apple Silicon: `YoyoPlugin-*-macos-arm64.dmg`
+- Windows: `YOYOPlugin-*-windows-x64-setup.exe`
+- macOS Intel: `YOYOPlugin-*-macos-x64.dmg`
+- macOS Apple Silicon: `YOYOPlugin-*-macos-arm64.dmg`
 
 After installation, two entry points are available:
 
-- `yoyo Plugin`: a silent launcher. It does not show the manager UI and only starts Codex with yoyo Plugin injection.
-- `yoyo Plugin Manager`: a Tauri control panel for launch, diagnostics, repair, updates, relay injection, enhancements, and user scripts.
+- `YOYO Plugin`: a silent launcher. It does not show the manager UI and only starts Codex with YOYO Plugin injection.
+- `YOYO Plugin Manager`: a Tauri control panel for launch, diagnostics, repair, updates, relay injection, enhancements, and user scripts.
 
-The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/yoyo Plugin.app` and `/Applications/yoyo Plugin 管理工具.app`.
+The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/YOYO Plugin.app` and `/Applications/YOYO Plugin 管理工具.app`.
 
 ## Highlights
 
@@ -43,7 +43,7 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 - Relay injection mode with multiple relay profiles, `CodexPlusPlus` provider configuration, and a one-click switch back to official ChatGPT login mode.
 - Traditional enhancement mode with plugin entry unlock, forced plugin install, session delete, Markdown export, project move, Timeline, and more.
 - Paste fix: when pasting from Word or other rich-text sources into the Codex composer, only keep the plain text so Codex does not treat the clipboard content as an image or file attachment. Off by default; requires a Codex relaunch to take effect.
-  - **Usage note**: after toggling in the manager, click the "保存增强设置" / "Save enhancement settings" button to persist, then restart yoyo Plugin for the change to take effect.
+  - **Usage note**: after toggling in the manager, click the "保存增强设置" / "Save enhancement settings" button to persist, then restart YOYO Plugin for the change to take effect.
 - Independent user script management with startup injection.
 - Provider Sync to keep historical sessions visible after switching providers.
 - Zed open entry detects remote SSH context and opens the matching remote file in Zed Remote Development from Codex.
@@ -76,9 +76,9 @@ In the manager's Relay Injection page:
 1. Make sure ChatGPT login status is detected.
 2. Add one or more relay profiles with Base URL and Key.
 3. Select the active profile and apply relay injection.
-4. Launch `yoyo Plugin`.
+4. Launch `YOYO Plugin`.
 
-yoyo Plugin writes configuration similar to this into `~/.codex/config.toml`:
+YOYO Plugin writes configuration similar to this into `~/.codex/config.toml`:
 
 ```toml
 model_provider = "CodexPlusPlus"
@@ -95,13 +95,13 @@ To return to the official login mode, use the clear API mode button in the Relay
 
 ## Enhancements
 
-Enhancements are controlled in the manager. Enhancement injection is enabled by default. When disabled, yoyo Plugin will not inject its menu or scripts.
+Enhancements are controlled in the manager. Enhancement injection is enabled by default. When disabled, YOYO Plugin will not inject its menu or scripts.
 
 When relay injection mode is active, plugin entry unlock and forced plugin install are unnecessary, and the UI will say so. Other enhancements, including session delete, export, move, Timeline, paste fix, recommendations, and user scripts, can still be used.
 
 ## Updates and Packages
 
-yoyo Plugin publishes installers through GitHub Releases. Windows builds an NSIS installer, while macOS builds separate Intel x64 and Apple Silicon arm64 DMGs.
+YOYO Plugin publishes installers through GitHub Releases. Windows builds an NSIS installer, while macOS builds separate Intel x64 and Apple Silicon arm64 DMGs.
 
 The manager's About page can check and start updates. When the silent launcher finds a new version, it opens the manager directly on the update prompt.
 
@@ -110,14 +110,14 @@ The manager's About page can check and start updates. When the silent launcher f
 - Codex config: `~/.codex/config.toml`
 - Codex auth state: `~/.codex/auth.json`
 - Codex local database: prefers `~/.codex/sqlite/*.db`, falls back to legacy `~/.codex/state_5.sqlite`
-- yoyo Plugin state and logs: `~/.codex-session-delete/`
+- YOYO Plugin state and logs: `~/.codex-session-delete/`
 - Provider Sync backups: `~/.codex/backups_state/provider-sync`
 
 ## FAQ
 
-### The yoyo Plugin menu does not appear
+### The YOYO Plugin menu does not appear
 
-Make sure Codex was launched from the `yoyo Plugin` entry instead of the original Codex entry. You can also inspect the Diagnostics and Logs pages in the manager.
+Make sure Codex was launched from the `YOYO Plugin` entry instead of the original Codex entry. You can also inspect the Diagnostics and Logs pages in the manager.
 
 ### The plugin says the backend is disconnected
 
@@ -127,17 +127,17 @@ First test the helper endpoint:
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:57321/backend/status -Body "{}" -ContentType "application/json"
 ```
 
-If the endpoint works but the plugin still times out, it is usually a Codex page CDP bridge or script cache issue. Restart yoyo Plugin, or check manager logs for `renderer.script_loaded`, `bridge.request`, and `bridge.response`.
+If the endpoint works but the plugin still times out, it is usually a Codex page CDP bridge or script cache issue. Restart YOYO Plugin, or check manager logs for `renderer.script_loaded`, `bridge.request`, and `bridge.response`.
 
 ### How is Upstream worktree different from Codex native creation?
 
-yoyo Plugin updates the remote branch first, then creates the worktree as if you ran:
+YOYO Plugin updates the remote branch first, then creates the worktree as if you ran:
 
 ```bash
 git worktree add -b <new-branch> <worktree-path> upstream/<base-branch>
 ```
 
-The new worktree starts from the fresh remote tracking branch instead of the local HEAD used by the current session. If yoyo Plugin cannot safely recognize the current Codex version's native worktree form, use the yoyo Plugin menu entry and enter the repository path, branch name, worktree path, remote, and base branch manually.
+The new worktree starts from the fresh remote tracking branch instead of the local HEAD used by the current session. If YOYO Plugin cannot safely recognize the current Codex version's native worktree form, use the YOYO Plugin menu entry and enter the repository path, branch name, worktree path, remote, and base branch manually.
 
 ### macOS says the app cannot be opened or is damaged
 
@@ -181,4 +181,4 @@ scripts/installer/
 
 ## Notes
 
-yoyo Plugin is an external enhancement tool and does not modify original Codex App files. If a future Codex App update changes page structure, the injection script may need updates.
+YOYO Plugin is an external enhancement tool and does not modify original Codex App files. If a future Codex App update changes page structure, the injection script may need updates.
