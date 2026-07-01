@@ -343,7 +343,6 @@
   const codexThreadScrollRouteHooksVersion = "dispatcher:2";
   const codexThreadScrollListenerVersion = "4";
   const codexThreadScrollUserIntentVersion = "dispatcher:2";
-  const codexForcePluginInstallRefreshIntervalMs = 1000;
   const codexPlusImageOverlayId = "codex-plus-image-overlay";
   window.__codexProjectMoveRuntimeId = (window.__codexProjectMoveRuntimeId || 0) + 1;
   const codexProjectMoveRuntimeId = window.__codexProjectMoveRuntimeId;
@@ -569,12 +568,6 @@
         border-color: #93c5fd;
         background: #dbeafe;
         color: #1d4ed8;
-      }
-      .codex-force-install-unlocked {
-        border-color: #ef4444 !important;
-        background: #fee2e2 !important;
-        color: #991b1b !important;
-        opacity: 1 !important;
       }
       .${zedRemoteButtonClass} {
         border: 1px solid #10a37f;
@@ -1022,6 +1015,8 @@
       }
       .codex-plus-toggle[data-enabled="true"] { background: #10a37f; }
       .codex-plus-toggle[data-enabled="true"] span { transform: translateX(18px); }
+      .codex-plus-toggle[data-pending="true"],
+      .codex-plus-toggle:disabled { cursor: not-allowed; opacity: .55; }
       .codex-plus-toggle[data-relay-unneeded="true"] { width: 72px; cursor: default; background: rgba(16,163,127,.16); color: #6ee7b7; }
       .codex-plus-toggle[data-relay-unneeded="true"] span { display: none; }
       .codex-plus-toggle[data-relay-unneeded="true"]::after { content: "无需开启"; font-size: 12px; font-weight: 650; line-height: 1; }
@@ -1148,12 +1143,11 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, forcePluginInstall: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false };
+    return { pluginMarketplaceUnlock: true, pluginAutoExpand: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, projectMove: true, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, stepwise: false };
   }
 
   const codexPlusBackendSettingMap = {
     pluginMarketplaceUnlock: "codexAppPluginMarketplaceUnlock",
-    forcePluginInstall: "codexAppForcePluginInstall",
     pluginAutoExpand: "codexAppPluginAutoExpand",
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     sessionDelete: "codexAppSessionDelete",
@@ -1166,8 +1160,10 @@
     upstreamWorktreeCreate: "codexAppUpstreamWorktreeCreate",
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     serviceTierControls: "codexAppServiceTierControls",
+    stepwise: "codexAppStepwiseEnabled",
     pasteFix: "codexAppPasteFix",
   };
+  const codexPlusBackendMappedSettings = new Set(Object.keys(codexPlusBackendSettingMap));
 
   function backendCodexPlusSettings() {
     const settings = {};
@@ -1184,7 +1180,6 @@
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
       return {
         pluginMarketplaceUnlock: false,
-        forcePluginInstall: false,
         pluginAutoExpand: false,
         modelWhitelistUnlock: false,
         sessionDelete: false,
@@ -1199,20 +1194,19 @@
         upstreamWorktreeCreate: false,
         nativeMenuPlacement: false,
         serviceTierControls: false,
+        stepwise: false,
       };
     }
     try {
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
-        settings.forcePluginInstall = false;
       }
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
-        settings.forcePluginInstall = false;
       }
       return settings;
     }
@@ -1221,7 +1215,12 @@
   function setCodexPlusSetting(key, value) {
     const backendKey = codexPlusBackendSettingMap[key];
     if (backendKey) {
-      setBackendSetting(backendKey, value);
+      if (key === "stepwise") syncStepwisePanel(value);
+      void setBackendSetting(backendKey, value).then(() => {
+        if (key === "stepwise") {
+          Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel(value));
+        }
+      });
       return;
     }
     let stored = {};
@@ -1257,8 +1256,20 @@
       window.__codexPluginAutoExpandRunning = false;
       window.__codexPluginAutoExpandLastSignature = "";
     }
+    if (key === "stepwise") syncStepwisePanel(value);
     renderCodexPlusMenu();
     scan();
+  }
+
+  function syncStepwisePanel(enabled = codexPlusSettings().stepwise) {
+    try {
+      window.__codexStepwisePanel?.syncSettings?.({ enabled: !!enabled });
+    } catch (error) {
+      sendCodexPlusDiagnostic("stepwise_sync_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    }
   }
 
   function normalizeConversationViewWidth(value) {
@@ -1291,15 +1302,20 @@
   }
 
   function renderCodexPlusMenu() {
+    const settings = codexPlusSettings();
     document.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-plus-setting");
-      button.dataset.enabled = String(!!codexPlusSettings()[key]);
+      const waitsForBackend = codexPlusBackendMappedSettings.has(key) && !codexPlusBackendSettingsLoaded;
+      button.dataset.enabled = String(!!settings[key]);
+      button.dataset.pending = String(waitsForBackend);
+      button.disabled = waitsForBackend || button.dataset.relayUnneeded === "true";
     });
     refreshConversationViewControls();
     refreshCodexServiceTierControls();
   }
 
   let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch", codexAppVersion: "" };
+  let codexPlusBackendSettingsSeq = 0;
   const codexPluginLegacyEntryUnlockBeforeVersion = "26.601.2237";
   const codexPluginBridgeRequestUnlockFromVersion = "26.616.0";
 
@@ -2061,10 +2077,14 @@
   }
 
   async function loadBackendSettings() {
+    const seq = codexPlusBackendSettingsSeq;
     try {
       const settings = await postJson("/settings/get", {});
       if (!settings || typeof settings !== "object" || (!("launchMode" in settings) && !("enhancementsEnabled" in settings) && !("providerSyncEnabled" in settings))) {
         throw new Error("invalid backend settings response");
+      }
+      if (seq !== codexPlusBackendSettingsSeq) {
+        return false;
       }
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
@@ -2089,11 +2109,15 @@
   }
 
   async function setBackendSetting(key, value) {
+    const seq = ++codexPlusBackendSettingsSeq;
     codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
+    codexPlusBackendSettingsLoaded = true;
     refreshCodexPlusBackendToggles();
     try {
       const settings = await postJson("/settings/set", { [key]: value });
-      codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+      if (seq === codexPlusBackendSettingsSeq) {
+        codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+      }
     } finally {
       refreshCodexPlusBackendToggles();
     }
@@ -2104,6 +2128,7 @@
       const key = button.getAttribute("data-codex-backend-setting");
       button.dataset.enabled = String(!!codexPlusBackendSettings[key]);
     });
+    syncStepwisePanel();
     renderCodexPlusMenu();
     scan();
   }
@@ -2388,16 +2413,16 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="pluginMarketplaceUnlock" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">特殊插件强制安装</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强模式下无需开启；不会改插件安装入口。" : "解除 App unavailable / 应用不可用导致的前端安装禁用。"}</div></div>
-              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="forcePluginInstall" ${codexPlusBackendSettings.launchMode === "relay" ? 'disabled data-relay-unneeded="true"' : ""}><span></span></button>
-            </div>
-            <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
+            </div>
+            <div class="codex-plus-row">
+              <div><div class="codex-plus-row-title">Stepwise</div><div class="codex-plus-row-description">在当前 Codex 页面显示可拖动的下一步建议浮层，可在设置页配置模型和直接发送。</div></div>
+              <button type="button" class="codex-plus-toggle" data-codex-plus-setting="stepwise"><span></span></button>
             </div>
             <div class="codex-plus-row" data-codex-service-tier-controls="true">
               <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承使用 config.toml 的 service tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
@@ -2464,7 +2489,7 @@
               <button type="button" class="codex-plus-toggle" data-codex-backend-setting="providerSyncEnabled"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出、项目移动和用户脚本，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、强制安装、项目路径移动等全部页面能力。"}</div></div>
+              <div><div class="codex-plus-row-title">页面增强模式</div><div class="codex-plus-row-description">${codexPlusBackendSettings.launchMode === "relay" ? "兼容增强：保留会话删除、导出、项目移动和用户脚本，仅关闭插件市场相关增强。" : "完整增强：加载插件市场、项目路径移动等全部页面能力。"}</div></div>
               <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
             </div>
             <div class="codex-plus-row">
@@ -2637,7 +2662,7 @@
       }
       const toggle = target?.closest("[data-codex-plus-setting]");
       if (toggle) {
-        if (toggle.disabled) return;
+        if (toggle.disabled || toggle.dataset.pending === "true") return;
         const key = toggle.getAttribute("data-codex-plus-setting");
         setCodexPlusSetting(key, !codexPlusSettings()[key]);
         return;
@@ -3501,129 +3526,7 @@
     return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
   }
 
-  function pluginInstallCandidates() {
-    const nodes = Array.from(document.querySelectorAll(selectors.disabledInstallButton));
-    return Array.from(new Set(nodes.map((node) => node.closest?.("button, [role='button']") || node)));
-  }
-
-  function installButtonLabel(element) {
-    return (element.textContent || "").trim();
-  }
-
-  function isInstallButtonLabel(text) {
-    return /^安装\s*/.test(text) || /^Install\s*/i.test(text) || text === "强制安装";
-  }
-
-  function patchReactDisabledProps(element) {
-    Object.keys(element)
-      .filter((key) => key.startsWith("__reactProps"))
-      .forEach((key) => {
-        const props = element[key];
-        if (!props || typeof props !== "object") return;
-        props.disabled = false;
-        props["aria-disabled"] = false;
-        props["data-disabled"] = undefined;
-      });
-  }
-
-  function clearDisabledState(element) {
-    if (!(element instanceof HTMLElement)) return;
-    if ("disabled" in element) element.disabled = false;
-    element.removeAttribute("disabled");
-    element.removeAttribute("aria-disabled");
-    element.removeAttribute("data-disabled");
-    element.removeAttribute("inert");
-    element.classList.remove("disabled", "opacity-50", "cursor-not-allowed", "pointer-events-none");
-    element.classList.add("codex-force-install-unlocked");
-    element.style.pointerEvents = "auto";
-    element.style.opacity = "";
-    element.style.cursor = "pointer";
-    element.tabIndex = 0;
-    patchReactDisabledProps(element);
-  }
-
-  function installButtonUnlockNodes(button) {
-    const nodes = [button];
-    button.querySelectorAll?.("button, [role='button'], [disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")
-      .forEach((node) => nodes.push(node));
-    let parent = button.parentElement;
-    for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
-      if (parent.matches?.("button, [role='button'], [disabled], [aria-disabled], [data-disabled], .cursor-not-allowed, .pointer-events-none")) {
-        nodes.push(parent);
-      }
-    }
-    return Array.from(new Set(nodes));
-  }
-
-  function installForcedInstallGuard(button) {
-    if (button.dataset.codexForceInstallUnlocked === "true") return;
-    button.dataset.codexForceInstallUnlocked = "true";
-    const keepUnlocked = () => installButtonUnlockNodes(button).forEach(clearDisabledState);
-    ["pointerdown", "mousedown", "mouseup", "click", "focus"].forEach((eventName) => {
-      button.addEventListener(eventName, keepUnlocked, true);
-    });
-  }
-
-  function unblockButtonElement(button) {
-    installButtonUnlockNodes(button).forEach(clearDisabledState);
-    installForcedInstallGuard(button);
-  }
-
-  function labelForcedInstallButton(button) {
-    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
-    let textNode = null;
-    while (!textNode && walker.nextNode()) {
-      const node = walker.currentNode;
-      if (isInstallButtonLabel((node.nodeValue || "").trim())) textNode = node;
-    }
-    if (textNode) {
-      textNode.nodeValue = "强制安装";
-    }
-  }
-
-  function clearForcedInstallButtonLabel(button) {
-    const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
-    let textNode = null;
-    while (!textNode && walker.nextNode()) {
-      const node = walker.currentNode;
-      if ((node.nodeValue || "").trim() === "强制安装") textNode = node;
-    }
-    if (textNode) {
-      textNode.nodeValue = "安装";
-    }
-  }
-
   function clearPluginPatchArtifacts() {
-    pluginInstallCandidates().forEach(clearForcedInstallButtonLabel);
-  }
-
-  function unblockPluginInstallButtons() {
-    if (pluginPatchDisabledInRelayMode()) return;
-    if (!codexPlusSettings().forcePluginInstall) return;
-    pluginInstallCandidates().forEach((button) => {
-      const text = installButtonLabel(button);
-      if (!isInstallButtonLabel(text)) return;
-      unblockButtonElement(button);
-      labelForcedInstallButton(button);
-    });
-  }
-
-  function refreshForcePluginInstallUnlockLoop() {
-    const shouldRun = !pluginPatchDisabledInRelayMode() && codexPlusSettings().forcePluginInstall;
-    if (!shouldRun) {
-      clearInterval(window.__codexForcePluginInstallRefreshTimer);
-      window.__codexForcePluginInstallRefreshTimer = null;
-      return;
-    }
-    if (window.__codexForcePluginInstallRefreshTimer) return;
-    window.__codexForcePluginInstallRefreshTimer = setInterval(() => {
-      if (!codexPlusSettings().forcePluginInstall || pluginPatchDisabledInRelayMode()) {
-        clearInterval(window.__codexForcePluginInstallRefreshTimer);
-        window.__codexForcePluginInstallRefreshTimer = null;
-        return;
-      }
-      unblockPluginInstallButtons();
-    }, codexForcePluginInstallRefreshIntervalMs);
   }
 
   let cachedSessionRows = [];
@@ -8659,7 +8562,6 @@
   function scanDeferred() {
     if (pluginPatchDisabledInRelayMode()) {
       clearPluginPatchArtifacts();
-      refreshForcePluginInstallUnlockLoop();
     } else {
       const pluginUnlockStrategy = codexPluginUnlockStrategy();
       const settings = codexPlusSettings();
@@ -8677,8 +8579,6 @@
           installPluginMarketplaceRequestPatch();
         }
       }
-      unblockPluginInstallButtons();
-      refreshForcePluginInstallUnlockLoop();
     }
     refreshThreadIdBadges();
     sessionRows().forEach(tryAttachButton);
