@@ -49,7 +49,23 @@ jobs:
           git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
           git fetch --no-tags upstream "$UPSTREAM_BRANCH"
           BEFORE=$(git rev-parse HEAD)
-          git merge -X ours --no-edit -m "yoyo: sync upstream $(date -u +%FT%TZ)" "upstream/${UPSTREAM_BRANCH}"
+          if ! git merge -X ours --no-edit -m "yoyo: sync upstream $(date -u +%FT%TZ)" "upstream/${UPSTREAM_BRANCH}"; then
+            # -X ours only resolves content conflicts. Path conflicts (e.g.
+            # upstream modifies a workflow file an earlier sync dropped:
+            # modify/delete) still fail the merge. Resolve conflicts under
+            # .github/workflows to our side — the revert below re-pins the
+            # whole directory anyway. Anything else needs a human.
+            OTHER=$(git diff --name-only --diff-filter=U | grep -v '^\.github/workflows/' || true)
+            if [ -n "$OTHER" ]; then
+              echo "Unresolvable merge conflicts outside .github/workflows:" >&2
+              echo "$OTHER" >&2
+              exit 1
+            fi
+            git diff --name-only --diff-filter=U | while IFS= read -r f; do
+              git rm -f -q --ignore-unmatch -- "$f"
+            done
+            git commit --no-edit --no-verify
+          fi
           # The built-in GITHUB_TOKEN cannot create/update files under
           # .github/workflows/ (needs a PAT with the `workflow` scope), so a
           # sync that touches an upstream workflow file gets rejected on push.
