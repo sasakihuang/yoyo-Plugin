@@ -49,6 +49,16 @@ jobs:
           git fetch --no-tags upstream "$UPSTREAM_BRANCH"
           BEFORE=$(git rev-parse HEAD)
           git merge -X ours --no-edit -m "yoyo: sync upstream $(date -u +%FT%TZ)" "upstream/${UPSTREAM_BRANCH}"
+          # The built-in GITHUB_TOKEN cannot create/update files under
+          # .github/workflows/ (needs a PAT with the `workflow` scope), so a
+          # sync that touches an upstream workflow file gets rejected on push.
+          # We maintain our own CI here, so keep our workflow files and drop
+          # any upstream changes to them from the merge commit.
+          if ! git diff --quiet "$BEFORE" HEAD -- .github/workflows; then
+            git checkout "$BEFORE" -- .github/workflows
+            git commit --amend --no-edit --no-verify
+            echo "Reverted upstream .github/workflows changes to keep our own CI."
+          fi
           AFTER=$(git rev-parse HEAD)
           CHANGED=false
           if [ "$BEFORE" != "$AFTER" ]; then
