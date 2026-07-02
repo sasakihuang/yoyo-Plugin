@@ -33,6 +33,7 @@ jobs:
     outputs:
       changed: ${{ steps.merge.outputs.changed }}
       version: ${{ steps.ver.outputs.version }}
+      sha: ${{ steps.merge.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,7 +49,36 @@ jobs:
           git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
           git fetch --no-tags upstream "$UPSTREAM_BRANCH"
           BEFORE=$(git rev-parse HEAD)
-          git merge -X ours --no-edit -m "yoyo: sync upstream $(date -u +%FT%TZ)" "upstream/${UPSTREAM_BRANCH}"
+          if ! git merge -X ours --no-edit -m "yoyo: sync upstream $(date -u +%FT%TZ)" "upstream/${UPSTREAM_BRANCH}"; then
+            # -X ours only resolves content conflicts. Path conflicts (e.g.
+            # upstream modifies a workflow file an earlier sync dropped:
+            # modify/delete) still fail the merge. Resolve conflicts under
+            # .github/workflows to our side — the revert below re-pins the
+            # whole directory anyway. Anything else needs a human.
+            OTHER=$(git diff --name-only --diff-filter=U | grep -v '^\.github/workflows/' || true)
+            if [ -n "$OTHER" ]; then
+              echo "Unresolvable merge conflicts outside .github/workflows:" >&2
+              echo "$OTHER" >&2
+              exit 1
+            fi
+            git diff --name-only --diff-filter=U | while IFS= read -r f; do
+              git rm -f -q --ignore-unmatch -- "$f"
+            done
+            git commit --no-edit --no-verify
+          fi
+          # The built-in GITHUB_TOKEN cannot create/update files under
+          # .github/workflows/ (needs a PAT with the `workflow` scope), so a
+          # sync that touches an upstream workflow file gets rejected on push.
+          # We maintain our own CI here, so keep our workflow files and drop
+          # any upstream changes to them from the merge commit.
+          if ! git diff --quiet "$BEFORE" HEAD -- .github/workflows; then
+            # rm handles files upstream ADDED (checkout alone would keep them),
+            # checkout restores files upstream modified or deleted.
+            git rm -r -f -q --ignore-unmatch -- .github/workflows
+            git checkout "$BEFORE" -- .github/workflows
+            git commit --amend --no-edit --no-verify
+            echo "Reverted upstream .github/workflows changes to keep our own CI."
+          fi
           AFTER=$(git rev-parse HEAD)
           CHANGED=false
           if [ "$BEFORE" != "$AFTER" ]; then
@@ -63,11 +93,27 @@ jobs:
             echo "Manual dispatch -> forcing build."
           fi
           echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+          # Build jobs must check out this exact commit: with the default ref,
+          # actions/checkout pins to the SHA that triggered the run, which is
+          # the PRE-merge tip of main — builds would silently use yesterday's
+          # tree while the release is tagged with today's version.
+          echo "sha=$AFTER" >> "$GITHUB_OUTPUT"
+      - name: Verify yoyo transform (fail fast before platform builds)
+        run: |
+          set -euo pipefail
+          VDIR="$RUNNER_TEMP/yoyo-verify"
+          mkdir -p "$VDIR"
+          git archive HEAD | tar -x -C "$VDIR"
+          (cd "$VDIR" && REPO_SLUG="$GITHUB_REPOSITORY" BRAND="$BRAND" GITHUB_WORKSPACE="$VDIR" bash scripts/apply-yoyo.sh)
       - name: Resolve version
         id: ver
         run: |
           set -euo pipefail
           V=$(awk '/^\[workspace.package\]/{f=1} f&&/^version/{gsub(/[^0-9.]/,"",$0);print;exit}' Cargo.toml)
+          case "$V" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "Could not parse version from Cargo.toml (got: '$V')" >&2; exit 3 ;;
+          esac
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Upstream version: $V"
 
@@ -77,6 +123,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.sha }} # post-merge commit, not the trigger SHA
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -126,6 +174,8 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.sha }} # post-merge commit, not the trigger SHA
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

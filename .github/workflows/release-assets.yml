@@ -1,8 +1,12 @@
 name: Release assets
 
+# yoyo fork: upstream triggers this on every published release, but it builds
+# UNtransformed (ad-included, upstream-branded) installers and attaches them
+# to that release — it would pollute the no-ads releases if a release is ever
+# published manually (yoyo-sync's GITHUB_TOKEN releases don't trigger it).
+# Kept dispatch-only for debugging; yoyo-sync.yml owns the real release build.
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: write
