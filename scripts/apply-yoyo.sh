@@ -59,9 +59,11 @@ _rep scripts/installer/windows/CodexPlusPlus.nsi 'CodexPlusPlus-' "$ASSET_PREFIX
 _rep scripts/installer/macos/package-dmg.sh 'CodexPlusPlus-' "$ASSET_PREFIX-"
 
 echo ">> [6/10] remove manager '推荐内容' nav entry"
-grep -qF 'label: "推荐内容"' "$APP" || { echo "ANCHOR MISSING: 推荐内容 nav" >&2; exit 5; }
+# Anchor on the entry id, not the label: upstream wrapped labels in t("...")
+# for i18n, and may re-wrap again; the id is the stable part.
+grep -qF '{ id: "recommendations",' "$APP" || { echo "ANCHOR MISSING: 推荐内容 nav" >&2; exit 5; }
 perl -0777 -i -pe 's/\n[ \t]*\{ id: "recommendations",[^}]*\},//g' "$APP"
-_gone "$APP" 'label: "推荐内容"'
+_gone "$APP" '{ id: "recommendations",'
 
 echo ">> [7/10] remove manager Overview '官方中转站' (JOJO) ad card"
 grep -qF 'jojocode-overview' "$APP" || { echo "ANCHOR MISSING: jojocode-overview" >&2; exit 5; }
