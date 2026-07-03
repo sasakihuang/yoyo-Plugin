@@ -500,13 +500,7 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     let settings = normalize_settings_before_save(settings);
     match SettingsStore::default().save(&settings) {
-        Ok(()) => {
-            let wrapper_message = refresh_cli_wrapper_after_settings_save(&settings);
-            settings_payload(
-                &format!("设置已保存。{wrapper_message}"),
-                "设置保存后重新读取失败",
-            )
-        }
+        Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
         Err(error) => failed(
             &format!("保存设置失败：{error}"),
             SettingsPayload {
@@ -1381,20 +1375,6 @@ pub async fn repair_shortcuts() -> InstallActionResult {
 }
 
 #[tauri::command]
-pub fn repair_backend() -> CommandResult<SettingsPayload> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let message = match codex_plus_core::cli_wrapper::ensure_cli_wrapper(&settings) {
-        Ok(Some(install)) => format!(
-            "后端已修复，命令包装器已指向 {}。",
-            install.real_codex.to_string_lossy()
-        ),
-        Ok(None) => "后端已修复，命令包装器当前未启用。".to_string(),
-        Err(error) => format!("后端修复部分失败：{error}"),
-    };
-    settings_payload(&message, "修复后重新读取设置失败")
-}
-
-#[tauri::command]
 pub fn plugin_marketplace_status() -> CommandResult<PluginMarketplaceStatusPayload> {
     let home = codex_plus_core::codex_home::default_codex_home_dir();
     let status = codex_plus_core::plugin_marketplace::openai_curated_marketplace_status(&home);
@@ -1470,7 +1450,7 @@ pub fn remote_plugin_marketplace_status() -> CommandResult<RemotePluginMarketpla
         remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
     ok(
         if status.needs_repair() {
-            "官方远端插件缓存需要注册或尚未缓存。"
+            "官方远端插件缓存需要释放或注册。"
         } else {
             "官方远端插件缓存已可用。"
         },
@@ -1491,10 +1471,10 @@ pub fn remote_plugin_marketplace_status() -> CommandResult<RemotePluginMarketpla
 #[tauri::command]
 pub fn repair_remote_plugin_marketplace() -> CommandResult<RemotePluginMarketplacePayload> {
     let home = codex_plus_core::codex_home::default_codex_home_dir();
-    match codex_plus_core::plugin_marketplace::ensure_openai_curated_remote_marketplace_config(
+    match codex_plus_core::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(
         &home,
     ) {
-        Ok(configured) => {
+        Ok(result) => {
             let status =
                 codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(
                     &home,
@@ -1502,9 +1482,9 @@ pub fn repair_remote_plugin_marketplace() -> CommandResult<RemotePluginMarketpla
             let (plugin_count, skill_count) =
                 remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
             ok(
-                if status.marketplace_root.is_none() {
-                    "未发现官方远端插件缓存，请先用官方账号缓存一次。"
-                } else if configured {
+                if result.initialized {
+                    "已释放并注册内置官方远端插件缓存。"
+                } else if result.configured {
                     "已注册官方远端插件缓存。"
                 } else {
                     "官方远端插件缓存已可用，无需修复。"
@@ -2875,17 +2855,6 @@ fn sanitize_manager_event(event: &str) -> String {
         suffix.to_string()
     } else {
         format!("manager.ui.{suffix}")
-    }
-}
-
-fn refresh_cli_wrapper_after_settings_save(settings: &BackendSettings) -> String {
-    match codex_plus_core::cli_wrapper::ensure_cli_wrapper(settings) {
-        Ok(Some(install)) => format!(
-            " 命令包装器已更新：{}。",
-            install.real_codex.to_string_lossy()
-        ),
-        Ok(None) => String::new(),
-        Err(error) => format!(" 但命令包装器更新失败：{error}。"),
     }
 }
 
