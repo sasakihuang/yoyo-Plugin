@@ -48,11 +48,50 @@ perl -0777 -i -pe 's/\Qname.contains("codex")\E/true/g; s/\Qname.contains("plus"
 _gone "$UPD" 'name.contains("codex")'
 _gone "$UPD" 'name.contains("plus")'
 
-echo ">> [4/13] simplify provider test result -> 通 / 不通"
+echo ">> [4/13] humanize provider test result + send Codex-shaped test request"
+# 4a. The upstream test sends a minimal payload ("input" as a plain string,
+#     tiny max tokens). Codex-only relays often reject that shape with
+#     HTTP 400 even though real usage works. Send what Codex itself sends
+#     and drop the token caps (both are optional and are known 400 sources).
+REL=crates/codex-plus-core/src/relay_config.rs
+_rep "$REL" '        RelayProtocol::Responses => serde_json::json!({
+            "model": model,
+            "input": "hi",
+            "max_output_tokens": 16
+        }),' '        RelayProtocol::Responses => serde_json::json!({
+            "model": model,
+            "input": [
+                { "type": "message", "role": "user", "content": [ { "type": "input_text", "text": "hi" } ] }
+            ],
+            "store": false
+        }),'
+_rep "$REL" '        RelayProtocol::ChatCompletions => serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "user", "content": "hi" }
+            ],
+            "max_tokens": 16
+        }),' '        RelayProtocol::ChatCompletions => serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "user", "content": "hi" }
+            ]
+        }),'
+_gone "$REL" '"input": "hi"'
+_gone "$REL" '"max_tokens": 16'
+_gone "$REL" '"max_output_tokens": 16'
+# 4b. Humanized result message instead of the upstream debug-style text.
 grep -qF '发送 hi，HTTP' "$CMD" || { echo "ANCHOR MISSING: provider test message" >&2; exit 5; }
-perl -0777 -i -pe 's/message: format!\(\s*"已向[^"]*",\s*result\.http_status\s*\)/message: if result.http_status < 400 { "通".to_string() } else { format!("不通（HTTP {}）", result.http_status) }/s' "$CMD"
+perl -0777 -i -pe 's/message: format!\(\s*"已向[^"]*",\s*result\.http_status\s*\)/message: match result.http_status {
+                    s if s < 400 => "测试通过，当前节点连通性正常。".to_string(),
+                    s @ (401 | 403) => format!("测试未通过：密钥无效或没有访问权限（HTTP {s}）。请检查 API Key 是否正确。"),
+                    404 => "测试未通过：接口地址不存在（HTTP 404）。请检查 Base URL 是否缺少 \/v1 前缀。".to_string(),
+                    429 => "节点已连通，但请求被限流或额度不足（HTTP 429）。".to_string(),
+                    s if s >= 500 => format!("测试未通过：节点服务器出错（HTTP {s}），可能是临时故障，请稍后重试。"),
+                    s => format!("测试未通过：请求被节点拒绝（HTTP {s}）。"),
+                }/s' "$CMD"
 _gone "$CMD" '发送 hi，HTTP'
-grep -qF 'message: if result.http_status < 400' "$CMD" || { echo "provider test simplify FAILED" >&2; exit 7; }
+grep -qF '测试通过，当前节点连通性正常' "$CMD" || { echo "provider test humanize FAILED" >&2; exit 7; }
 
 echo ">> [5/13] rebrand installer asset filenames"
 _rep scripts/installer/windows/CodexPlusPlus.nsi 'CodexPlusPlus-' "$ASSET_PREFIX-"
