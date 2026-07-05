@@ -29,9 +29,12 @@ env:
 
 jobs:
   sync:
+    # Never sync/build/release from a side branch: a workflow_dispatch on a
+    # feature branch would otherwise replace the production release.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
-      changed: ${{ steps.merge.outputs.changed }}
+      build: ${{ steps.ver.outputs.build }}
       version: ${{ steps.ver.outputs.version }}
       sha: ${{ steps.merge.outputs.sha }}
     steps:
@@ -80,51 +83,87 @@ jobs:
             echo "Reverted upstream .github/workflows changes to keep our own CI."
           fi
           AFTER=$(git rev-parse HEAD)
-          CHANGED=false
+          MERGED=false
           if [ "$BEFORE" != "$AFTER" ]; then
-            git push origin HEAD
-            CHANGED=true
-            echo "Synced upstream changes."
+            MERGED=true
+            echo "Merged upstream changes (push happens after the transform verify)."
           else
             echo "No upstream changes."
           fi
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            CHANGED=true
-            echo "Manual dispatch -> forcing build."
-          fi
-          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+          echo "merged=$MERGED" >> "$GITHUB_OUTPUT"
           # Build jobs must check out this exact commit: with the default ref,
           # actions/checkout pins to the SHA that triggered the run, which is
           # the PRE-merge tip of main — builds would silently use yesterday's
           # tree while the release is tagged with today's version.
           echo "sha=$AFTER" >> "$GITHUB_OUTPUT"
-      - name: Verify yoyo transform (fail fast before platform builds)
+      - name: Verify yoyo transform (fail fast, BEFORE main advances)
         run: |
           set -euo pipefail
           VDIR="$RUNNER_TEMP/yoyo-verify"
           mkdir -p "$VDIR"
-          git archive HEAD | tar -x -C "$VDIR"
+          # Plain copy, not `git archive`: an upstream export-ignore
+          # .gitattributes would make the archive diverge from the tree the
+          # platform builds actually check out.
+          tar --exclude=.git -cf - . | tar -xf - -C "$VDIR"
           (cd "$VDIR" && REPO_SLUG="$GITHUB_REPOSITORY" BRAND="$BRAND" GITHUB_WORKSPACE="$VDIR" bash scripts/apply-yoyo.sh)
-      - name: Resolve version
+      - name: Push merged upstream changes
+        if: steps.merge.outputs.merged == 'true'
+        run: git push origin HEAD
+      - name: Resolve version + decide whether to build
         id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          V=$(awk '/^\[workspace.package\]/{f=1} f&&/^version/{gsub(/[^0-9.]/,"",$0);print;exit}' Cargo.toml)
-          case "$V" in
-            [0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "Could not parse version from Cargo.toml (got: '$V')" >&2; exit 3 ;;
-          esac
+          # Take the quoted value inside [workspace.package] and keep only a
+          # leading X.Y.Z: comments with digits or a -beta suffix must not
+          # leak into the release tag (the updater would prompt forever).
+          RAW=$(awk -F'"' '/^\[workspace.package\]/{f=1;next} /^\[/{f=0} f && /^[[:space:]]*version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          V=$(printf '%s' "$RAW" | sed -nE 's/^([0-9]+\.[0-9]+\.[0-9]+).*$/\1/p')
+          if [ -z "$V" ]; then
+            echo "Could not parse version from Cargo.toml (raw: '$RAW')" >&2
+            exit 3
+          fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "Upstream version: $V"
+          echo "Upstream version: $V (raw: $RAW)"
+          BUILD=false
+          [ "${{ steps.merge.outputs.merged }}" = "true" ] && BUILD=true
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BUILD=true
+            echo "Manual dispatch -> forcing build."
+          fi
+          # Self-heal: if a previous run merged (advancing main) but the build
+          # or release then failed, the next runs would otherwise see "no
+          # upstream changes" and never release this version.
+          if [ "$BUILD" = "false" ] && ! gh release view "v${V}-noads" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            BUILD=true
+            echo "Release v${V}-noads is missing -> rebuilding."
+          fi
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          # Keepalive: GitHub disables cron schedules in repos with no commit
+          # activity for 60 days. If upstream goes quiet, refresh main so the
+          # daily sync survives long upstream pauses.
+          if [ "$BUILD" = "false" ]; then
+            LAST=$(git log -1 --format=%ct)
+            AGE_DAYS=$(( ( $(date +%s) - LAST ) / 86400 ))
+            if [ "$AGE_DAYS" -ge 50 ]; then
+              git commit --allow-empty -m "yoyo: keepalive (no upstream activity for ${AGE_DAYS} days)"
+              git push origin HEAD
+              echo "Pushed keepalive commit."
+            fi
+          fi
 
   windows:
     needs: sync
-    if: needs.sync.outputs.changed == 'true'
+    if: needs.sync.outputs.build == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.sync.outputs.sha }} # post-merge commit, not the trigger SHA
+          # Build jobs compile upstream-controlled code (cargo build scripts,
+          # npm postinstalls) — don't leave a writable token in .git/config.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -160,7 +199,7 @@ jobs:
 
   macos:
     needs: sync
-    if: needs.sync.outputs.changed == 'true'
+    if: needs.sync.outputs.build == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -176,6 +215,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.sync.outputs.sha }} # post-merge commit, not the trigger SHA
+          # Build jobs compile upstream-controlled code (cargo build scripts,
+          # npm postinstalls) — don't leave a writable token in .git/config.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -203,7 +245,7 @@ jobs:
 
   release:
     needs: [sync, windows, macos]
-    if: needs.sync.outputs.changed == 'true'
+    if: needs.sync.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -215,28 +257,41 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           VERSION: ${{ needs.sync.outputs.version }}
+          TARGET_SHA: ${{ needs.sync.outputs.sha }}
         run: |
           set -euo pipefail
           TAG="v${VERSION}-noads"
-          gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "$TAG" dist/*.exe dist/*.dmg --repo "$REPO" --latest \
-            --title "YOYO Plugin ${VERSION} (no-ads)" \
-            --notes "Auto-built ad-free, rebranded build of upstream v${VERSION}. Unsigned - OS may warn on first launch."
-          gh release view "$TAG" --repo "$REPO" --json assets,body,tagName,url > release.json
+          # latest.json is generated from the local artifacts so it can ship
+          # inside the release from the start (no API round-trip, no window
+          # where the release exists without latest.json).
           node <<'NODE'
           const fs = require("fs");
-          const r = JSON.parse(fs.readFileSync("release.json", "utf8"));
           const repo = process.env.REPO;
-          const tag = r.tagName;
-          const version = tag.replace(/^v/i, "");
+          const version = process.env.VERSION;
+          const tag = `v${version}-noads`;
           const base = `https://github.com/${repo}/releases/download/${tag}`;
-          const assets = (r.assets || []).map(a => a.name)
-            .filter(n => n !== "latest.json")
+          const assets = fs.readdirSync("dist")
+            .filter(n => n.endsWith(".exe") || n.endsWith(".dmg"))
+            .sort()
             .map(n => ({ name: n, url: `${base}/${encodeURIComponent(n)}` }));
-          fs.writeFileSync("latest.json",
-            JSON.stringify({ version: `v${version}`, url: r.url, body: r.body || "", assets }, null, 2) + "\n");
+          if (assets.length === 0) { console.error("no installer artifacts in dist/"); process.exit(1); }
+          fs.writeFileSync("latest.json", JSON.stringify({
+            version: `v${version}-noads`,
+            url: `https://github.com/${repo}/releases/tag/${tag}`,
+            body: `Auto-built ad-free, rebranded build of upstream v${version}. Unsigned - OS may warn on first launch.`,
+            assets
+          }, null, 2) + "\n");
           NODE
-          gh release upload "$TAG" latest.json --clobber --repo "$REPO"
+          # Same-version re-runs: drop the previous release+tag first.
+          gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+          # Draft first: the release only becomes visible (and --latest) once
+          # every asset including latest.json is uploaded, so updaters never
+          # see a half-published release.
+          gh release create "$TAG" dist/*.exe dist/*.dmg latest.json --repo "$REPO" \
+            --draft --target "$TARGET_SHA" \
+            --title "YOYO Plugin ${VERSION} (no-ads)" \
+            --notes "Auto-built ad-free, rebranded build of upstream v${VERSION}. Unsigned - OS may warn on first launch."
+          gh release edit "$TAG" --repo "$REPO" --draft=false --latest
           echo "Published $TAG as latest."
 
   notify:
