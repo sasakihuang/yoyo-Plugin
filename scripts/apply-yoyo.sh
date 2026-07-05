@@ -42,8 +42,17 @@ grep -rlIF 'BigPizzaV3/CodexPlusPlus' apps crates assets scripts \
       SLUG="$REPO_SLUG" perl -0777 -i -pe 's{BigPizzaV3/CodexPlusPlus(?!ScriptMarket)}{$ENV{SLUG}}g' "$f"
     done
 _gone "$UPD" 'BigPizzaV3/CodexPlusPlus'
+# Positive assert: if upstream ever moves orgs/renames the repo, the _gone
+# check above would pass vacuously and shipped builds would auto-update from
+# the (ad-laden) upstream. The updater MUST point at this fork.
+grep -qF "$REPO_SLUG" "$UPD" || { echo "REBRAND FAILED: updater does not point at $REPO_SLUG" >&2; exit 7; }
 
 echo ">> [3/13] make in-app updater accept rebranded (YOYO) asset filenames"
+# Pre-assert the anchors exist: if upstream refactors the matching code the
+# _gone checks below would pass vacuously and the updater would silently
+# reject YOYOPlugin-* assets.
+grep -qF 'name.contains("codex")' "$UPD" || { echo "ANCHOR MISSING: updater asset matching (codex)" >&2; exit 5; }
+grep -qF 'name.contains("plus")' "$UPD" || { echo "ANCHOR MISSING: updater asset matching (plus)" >&2; exit 5; }
 perl -0777 -i -pe 's/\Qname.contains("codex")\E/true/g; s/\Qname.contains("plus")\E/true/g' "$UPD"
 _gone "$UPD" 'name.contains("codex")'
 _gone "$UPD" 'name.contains("plus")'
@@ -54,29 +63,13 @@ echo ">> [4/13] humanize provider test result + send Codex-shaped test request"
 #     HTTP 400 even though real usage works. Send what Codex itself sends
 #     and drop the token caps (both are optional and are known 400 sources).
 REL=crates/codex-plus-core/src/relay_config.rs
-_rep "$REL" '        RelayProtocol::Responses => serde_json::json!({
-            "model": model,
-            "input": "hi",
-            "max_output_tokens": 16
-        }),' '        RelayProtocol::Responses => serde_json::json!({
-            "model": model,
-            "input": [
-                { "type": "message", "role": "user", "content": [ { "type": "input_text", "text": "hi" } ] }
-            ],
-            "store": false
-        }),'
-_rep "$REL" '        RelayProtocol::ChatCompletions => serde_json::json!({
-            "model": model,
-            "messages": [
-                { "role": "user", "content": "hi" }
-            ],
-            "max_tokens": 16
-        }),' '        RelayProtocol::ChatCompletions => serde_json::json!({
-            "model": model,
-            "messages": [
-                { "role": "user", "content": "hi" }
-            ]
-        }),'
+# Whitespace-tolerant regexes, NOT multi-line literals: the Windows runner
+# may check out with CRLF line endings and a literal LF block would never
+# match there (sync verify on Linux would still pass -> only Windows dies).
+grep -qF '"input": "hi"' "$REL" || { echo "ANCHOR MISSING: relay test payload (responses)" >&2; exit 5; }
+grep -qF '"max_tokens": 16' "$REL" || { echo "ANCHOR MISSING: relay test payload (chat)" >&2; exit 5; }
+perl -0777 -i -pe 's/RelayProtocol::Responses => serde_json::json!\(\{\s*"model": model,\s*"input": "hi",\s*"max_output_tokens": 16\s*\}\),/RelayProtocol::Responses => serde_json::json!({\n            "model": model,\n            "input": [\n                { "type": "message", "role": "user", "content": [ { "type": "input_text", "text": "hi" } ] }\n            ],\n            "store": false\n        }),/s' "$REL"
+perl -0777 -i -pe 's/RelayProtocol::ChatCompletions => serde_json::json!\(\{\s*"model": model,\s*"messages": \[\s*\{ "role": "user", "content": "hi" \}\s*\],\s*"max_tokens": 16\s*\}\),/RelayProtocol::ChatCompletions => serde_json::json!({\n            "model": model,\n            "messages": [\n                { "role": "user", "content": "hi" }\n            ]\n        }),/s' "$REL"
 _gone "$REL" '"input": "hi"'
 _gone "$REL" '"max_tokens": 16'
 _gone "$REL" '"max_output_tokens": 16'
@@ -93,9 +86,14 @@ perl -0777 -i -pe 's/message: format!\(\s*"已向[^"]*",\s*result\.http_status\s
 _gone "$CMD" '发送 hi，HTTP'
 grep -qF '测试通过，当前节点连通性正常' "$CMD" || { echo "provider test humanize FAILED" >&2; exit 7; }
 
-echo ">> [5/13] rebrand installer asset filenames"
+echo ">> [5/13] rebrand installer asset filenames + quote UninstallString"
 _rep scripts/installer/windows/CodexPlusPlus.nsi 'CodexPlusPlus-' "$ASSET_PREFIX-"
 _rep scripts/installer/macos/package-dmg.sh 'CodexPlusPlus-' "$ASSET_PREFIX-"
+# The rebrand puts a space in $INSTDIR ("...\Programs\YOYO Plugin"), so the
+# registry UninstallString must be quoted or unquoted-path parsing applies.
+_rep scripts/installer/windows/CodexPlusPlus.nsi \
+  '"UninstallString" "$INSTDIR\uninstall.exe"' \
+  '"UninstallString" "$\"$INSTDIR\uninstall.exe$\""'
 
 echo ">> [6/13] remove manager '推荐内容' nav entry"
 # Anchor on the entry id, not the label: upstream wrapped labels in t("...")
@@ -109,11 +107,24 @@ grep -qF 'jojocode-overview' "$APP" || { echo "ANCHOR MISSING: jojocode-overview
 perl -0777 -i -pe 's{\s*<Panel className="jojocode-overview">.*?</Panel>}{}s' "$APP"
 _gone "$APP" 'jojocode-overview'
 
-echo ">> [8/13] remove About 'Discord' + 'Telegram' community buttons"
+echo ">> [8/13] remove upstream Discord/Telegram community links (manager + injected menu)"
 perl -0777 -i -pe 's!\s*<Button onClick=\{[^}]*discord\.gg[^}]*\}[^>]*>.*?</Button>!!s' "$APP"
 perl -0777 -i -pe 's!\s*<Button onClick=\{[^}]*t\.me/[^}]*\}[^>]*>.*?</Button>!!s' "$APP"
 _gone "$APP" 'discord.gg'
 _gone "$APP" 't.me/'
+INJ=assets/inject/renderer-inject.js
+grep -qF 'data-codex-plus-discord' "$INJ" || { echo "ANCHOR MISSING: injected Discord row" >&2; exit 5; }
+grep -qF 'data-codex-plus-telegram' "$INJ" || { echo "ANCHOR MISSING: injected Telegram row" >&2; exit 5; }
+# About text links
+perl -0777 -i -pe 's!<br>Discord: <a href="https://discord\.gg/[^"]*"[^>]*>[^<]*</a><br>Telegram: <a href="https://t\.me/[^"]*"[^>]*>[^<]*</a>!!' "$INJ"
+# Home-tab rows
+perl -0777 -i -pe 's!\s*<div class="codex-plus-row">\s*<div><div class="codex-plus-row-title">Discord 社区</div><div class="codex-plus-row-description">[^<]*</div></div>\s*<button type="button" class="codex-plus-action-button" data-codex-plus-discord="true">[^<]*</button>\s*</div>!!s' "$INJ"
+perl -0777 -i -pe 's!\s*<div class="codex-plus-row">\s*<div><div class="codex-plus-row-title">Telegram 频道</div><div class="codex-plus-row-description">[^<]*</div></div>\s*<button type="button" class="codex-plus-action-button" data-codex-plus-telegram="true">[^<]*</button>\s*</div>!!s' "$INJ"
+# Click handlers (would be dead code, but remove so the _gone checks are real)
+perl -0777 -i -pe 's!\s*if \(target\?\.closest\("\[data-codex-plus-discord\]"\)\) \{\s*window\.open\("https://discord\.gg/[^"]*", "_blank"\);\s*return;\s*\}!!s' "$INJ"
+perl -0777 -i -pe 's!\s*if \(target\?\.closest\("\[data-codex-plus-telegram\]"\)\) \{\s*window\.open\("https://t\.me/[^"]*", "_blank"\);\s*return;\s*\}!!s' "$INJ"
+_gone "$INJ" 'discord.gg'
+_gone "$INJ" 't.me/'
 
 echo ">> [9/13] brand badge: C++ -> YOYO (inline font-size so it fits)"
 _rep "$APP" '<div className="brand-mark">C++</div>' '<div className="brand-mark" style={{ fontSize: "11px", letterSpacing: "-0.3px" }}>YOYO</div>'
@@ -124,10 +135,19 @@ grep -rlIF 'Codex++' apps crates assets scripts \
   | while IFS= read -r f; do
       TO="$BRAND" perl -0777 -i -pe 's/\QCodex++\E/$ENV{TO}/g' "$f"
     done
-
-INJ=assets/inject/renderer-inject.js
+# Positive assert on the most user-visible surface (window title / app name),
+# plus a residue sweep: if upstream ever respells the brand, fail loudly
+# instead of shipping half-branded installers.
+grep -qF "$BRAND" apps/codex-plus-manager/src-tauri/tauri.conf.json || { echo "REBRAND FAILED: tauri.conf.json lacks '$BRAND'" >&2; exit 7; }
+LEFT=$(grep -rlIF 'Codex++' apps crates assets scripts 2>/dev/null \
+  | grep -vE '/node_modules/|/target/|package-lock\.json|scripts/apply-yoyo\.sh' || true)
+[ -z "$LEFT" ] || { echo "REBRAND FAILED: 'Codex++' still present in: $LEFT" >&2; exit 7; }
 
 echo ">> [11/13] disable injected-menu remote ads (fetched in-browser, bypasses ads.rs)"
+# Pre-assert: _rep's "TO already present" tolerance is vacuously satisfied by
+# the unrelated `let codexPlusAds = [];` declaration, so without this check an
+# upstream rename of directFetchCodexPlusAds would silently re-ship the ads.
+grep -qF 'codexPlusAds = normalizeCodexPlusAds(await directFetchCodexPlusAds());' "$INJ" || { echo "ANCHOR MISSING: injected ad fetch call" >&2; exit 5; }
 _rep "$INJ" \
   'codexPlusAds = normalizeCodexPlusAds(await directFetchCodexPlusAds());' \
   'codexPlusAds = [];'
