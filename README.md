@@ -1,7 +1,6 @@
 # YOYO Plugin
 
-> **YOYO Plugin** 是 CodexPlusPlus 的去广告 + 改名 fork，每天自动跟随上游更新，应用内可一键更新。
-
+> **YOYO Plugin** 是面向 Codex App 的外部增强启动器与管理工具，支持应用内一键更新。
 <p align="center">
   <img src="docs/images/codex-plus-plus.png" alt="YOYO Plugin 图标" width="160">
 </p>
