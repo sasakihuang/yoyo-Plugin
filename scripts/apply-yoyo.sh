@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # YOYO Plugin — build-time transform for a CodexPlusPlus fork.
 # Runs on a CLEAN upstream checkout BEFORE building (never committed), so the
-# fork keeps tracking upstream while we strip ads + rebrand each build.
+# fork keeps tracking upstream while we strip ads/branding/contact each build.
 # Every removal is ASSERTED afterwards: if upstream restructures and a removal
-# stops matching, the build FAILS LOUDLY instead of silently shipping the ad.
+# stops matching, the build FAILS LOUDLY instead of silently shipping it.
 # Anchors are single-line / whitespace-tolerant so Windows (CRLF) is safe.
 # Usage: REPO_SLUG="you/yoyo-Plugin" BRAND="YOYO Plugin" bash scripts/apply-yoyo.sh
 set -euo pipefail
@@ -14,6 +14,7 @@ ASSET_PREFIX="${ASSET_PREFIX:-YOYOPlugin}"
 APP=apps/codex-plus-manager/src/App.tsx
 UPD=crates/codex-plus-core/src/update.rs
 CMD=apps/codex-plus-manager/src-tauri/src/commands.rs
+INJ=assets/inject/renderer-inject.js
 
 ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 cd "$ROOT"
@@ -68,11 +69,21 @@ grep -qF 'jojocode-overview' "$APP" || { echo "ANCHOR MISSING: jojocode-overview
 perl -0777 -i -pe 's{\s*<Panel className="jojocode-overview">.*?</Panel>}{}s' "$APP"
 _gone "$APP" 'jojocode-overview'
 
-echo ">> [8/10] remove About 'Discord' + 'Telegram' community buttons"
+echo ">> [8/10] remove ALL contact/community (Discord / Telegram / GitHub issues) — injected menu + manager"
+# injected Codex menu: remove the 3 community rows (anchor on stable data-attr, text-agnostic)
+for KEY in discord telegram issue; do
+  perl -0777 -i -pe 's{\s*<div class="codex-plus-row">\s*<div><div class="codex-plus-row-title">[^<]*</div><div class="codex-plus-row-description">[^<]*</div></div>\s*<button[^>]*data-codex-plus-'"$KEY"'[^>]*>[^<]*</button>\s*</div>}{}sg' "$INJ"
+done
+perl -0777 -i -pe 's{<br>Discord: <a[^>]*>[^<]*</a><br>Telegram: <a[^>]*>[^<]*</a>}{}sg' "$INJ"
+_gone "$INJ" 'Discord 社区'
+_gone "$INJ" 'Telegram 频道'
+# manager About: remove 反馈问题(issues) + Discord + Telegram buttons (keep 打开项目主页 -> fork)
+perl -0777 -i -pe 's!\s*<Button onClick=\{[^}]*openExternalUrl\("https://github\.com/[^"]*/issues"\)[^}]*\}[^>]*>.*?</Button>!!s' "$APP"
 perl -0777 -i -pe 's!\s*<Button onClick=\{[^}]*discord\.gg[^}]*\}[^>]*>.*?</Button>!!s' "$APP"
 perl -0777 -i -pe 's!\s*<Button onClick=\{[^}]*t\.me/[^}]*\}[^>]*>.*?</Button>!!s' "$APP"
 _gone "$APP" 'discord.gg'
 _gone "$APP" 't.me/'
+_gone "$APP" '/issues"'
 
 echo ">> [9/10] brand badge: C++ -> YOYO (inline font-size so it fits)"
 _rep "$APP" '<div className="brand-mark">C++</div>' '<div className="brand-mark" style={{ fontSize: "11px", letterSpacing: "-0.3px" }}>YOYO</div>'
