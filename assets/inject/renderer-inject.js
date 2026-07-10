@@ -4601,8 +4601,29 @@
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
-      .then((result) => {
+      .then(async (result) => {
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
+        if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
+          try {
+            const settingsPromise = postJson("/settings/get", {});
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("fallback timeout")), 3000));
+            const settingsResp = await Promise.race([settingsPromise, timeoutPromise]);
+            if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
+              const activeId = settingsResp.activeRelayId || "";
+              const profile = settingsResp.relayProfiles.find(p => p.id === activeId) || settingsResp.relayProfiles[0];
+              if (profile && profile.modelList) {
+                const extraModels = profile.modelList.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean);
+                if (extraModels.length > 0) {
+                  codexModelCatalog.models = extraModels;
+                  codexModelCatalog.default_model = codexModelCatalog.default_model || extraModels[0];
+                  sendCodexPlusDiagnostic("model_catalog_fallback_applied", { count: extraModels.length });
+                }
+              }
+            }
+          } catch (fallbackError) {
+            sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
+          }
+        }
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
@@ -4979,8 +5000,36 @@
     return true;
   }
 
+  const appServerModelRequestPatchMaxMisses = 8;
+  let appServerModelRequestPatchMissCount = 0;
+  let appServerModelRequestPatchDisabled = false;
+
+  function noteAppServerModelRequestPatchMiss(event, detail) {
+    appServerModelRequestPatchMissCount += 1;
+    // installAppServerModelRequestPatch() runs on every model-whitelist
+    // refresh tick (~120ms). On Codex builds where the app-server module was
+    // renamed/removed (e.g. 26.623+, issue #1324) this layer never succeeds
+    // and would otherwise emit the same diagnostic on every tick forever.
+    // Report the first miss so telemetry still captures the cause, then stay
+    // quiet, and finally disable this layer once it is clearly unavailable.
+    // This is a graceful fallback: the remaining whitelist layers (Statsig
+    // config / React state / response JSON patch) keep injecting the custom
+    // models on their own.
+    if (appServerModelRequestPatchMissCount === 1) {
+      sendCodexPlusDiagnostic(event, detail);
+    }
+    if (appServerModelRequestPatchMissCount >= appServerModelRequestPatchMaxMisses && !appServerModelRequestPatchDisabled) {
+      appServerModelRequestPatchDisabled = true;
+      sendCodexPlusDiagnostic("model_app_server_request_patch_skipped", {
+        misses: appServerModelRequestPatchMissCount,
+        lastEvent: event,
+      });
+    }
+  }
+
   function installAppServerModelRequestPatch() {
     if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
+    if (appServerModelRequestPatchDisabled) return;
     const patch = async () => {
       try {
         const module = await loadCodexAppModule("app-server-manager-signals-");
@@ -4996,19 +5045,20 @@
           }
         }
         if (patchedCount > 0) {
+          appServerModelRequestPatchMissCount = 0;
           window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
           sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
             candidateCount: candidates.length,
             patchedCount,
           });
         } else {
-          sendCodexPlusDiagnostic("model_app_server_request_patch_not_found", {
+          noteAppServerModelRequestPatchMiss("model_app_server_request_patch_not_found", {
             exportCount: Object.keys(module || {}).length,
             candidateCount: candidates.length,
           });
         }
       } catch (error) {
-        sendCodexPlusDiagnostic("model_app_server_request_patch_failed", {
+        noteAppServerModelRequestPatchMiss("model_app_server_request_patch_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
         });
