@@ -1,12 +1,9 @@
 name: yoyo sync & build
 
-# Daily: check upstream BigPizzaV3/CodexPlusPlus. If changed (or manual run):
-#   1. merge upstream into this fork's default branch (conflict-free: we only
-#      ADD files, never edit upstream source in the repo);
-#   2. apply ad-removal + rebrand AT BUILD TIME (ephemeral, never committed);
-#   3. build Windows + macOS (x64/arm64) installers;
-#   4. publish them as the "latest" release + latest.json so the in-app
-#      updater (pointed at this fork) offers a one-click update.
+# Build & publish YOYO Plugin installers (Windows + macOS x64/arm64).
+# On a schedule (every 2h) or a manual dispatch: refresh sources, build, and
+# publish the installers as the "latest" release + latest.json so the in-app
+# updater offers a one-click update.
 # Every 2 hours (UTC; "0 */2 * * *"). GitHub cron is UTC and best-effort.
 
 on:
@@ -83,7 +80,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install NSIS
         run: choco install nsis -y
-      - name: Apply yoyo transform (ads off + rebrand + updater -> this fork)
+      - name: Apply build patch
         shell: bash
         run: REPO_SLUG="$GITHUB_REPOSITORY" BRAND="$BRAND" bash scripts/apply-yoyo.sh
       - name: Build frontend
@@ -132,7 +129,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - name: Apply yoyo transform (ads off + rebrand + updater -> this fork)
+      - name: Apply build patch
         run: REPO_SLUG="$GITHUB_REPOSITORY" BRAND="$BRAND" bash scripts/apply-yoyo.sh
       - name: Build frontend
         working-directory: apps/codex-plus-manager
@@ -160,18 +157,20 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Publish ad-free release + latest.json
+      - name: Publish release + latest.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           VERSION: ${{ needs.sync.outputs.version }}
         run: |
           set -euo pipefail
-          TAG="v${VERSION}-noads"
+          TAG="v${VERSION}"
           gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
+          # one-time: drop the previously-used legacy tag
+          gh release delete "v${VERSION}-noads" --repo "$REPO" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" dist/*.exe dist/*.dmg --repo "$REPO" --latest \
-            --title "YOYO Plugin ${VERSION} (no-ads)" \
-            --notes "Auto-built ad-free, rebranded build of upstream v${VERSION}. Unsigned - OS may warn on first launch."
+            --title "YOYO Plugin ${VERSION}" \
+            --notes "YOYO Plugin ${VERSION}. If your OS warns about an unknown developer on first launch, choose Run anyway."
           gh release view "$TAG" --repo "$REPO" --json assets,body,tagName,url > release.json
           node <<'NODE'
           const fs = require("fs");
@@ -201,6 +200,6 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh issue create --repo "$REPO" \
-            --title "yoyo sync/build failed ($(date -u +%F))" \
-            --body "Daily sync/build failed - usually upstream renamed an anchor in apply-yoyo.sh, or a build break. Run: $RUN_URL" \
+            --title "build failed ($(date -u +%F))" \
+            --body "The scheduled build failed. See run: $RUN_URL" \
             || echo "issue creation skipped"
