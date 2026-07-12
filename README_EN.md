@@ -35,7 +35,23 @@ After installation, two entry points are available:
 
 The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG installs `/Applications/YOYO Plugin.app` and `/Applications/YOYO Plugin 管理工具.app`.
 
-## Highlights
+<table>
+  <tr>
+    <td align="center" width="55%">
+      <strong>Support the Project</strong><br><br>
+      <img src="docs/images/sponsor-alipay.jpg" alt="Alipay sponsor QR code" width="220">
+      <img src="docs/images/sponsor-wechat.jpg" alt="WeChat sponsor QR code" width="220">
+    </td>
+    <td align="center" width="45%">
+      <strong>Join the Community</strong><br><br>
+      <img src="docs/images/discussion-group-qr.jpg" alt="Codex++ WeChat group QR code" width="220"><br><br>
+      QQ group: <code>830629290</code><br>
+      WeChat: <a href="https://docs.qq.com/doc/DQ2VOanZTTFZJcUpZ#">latest group QR code</a><br>
+      Telegram: <a href="https://t.me/CodexPlusPlus">CodexPlusPlus</a><br>
+      Friendly link: <a href="https://linux.do">LINUX DO</a>
+    </td>
+  </tr>
+</table>
 
 - Rust backend and silent launcher with no extra runtime requirement.
 - Tauri + React manager with dark/light theme support.
@@ -53,26 +69,31 @@ The Windows installer creates desktop and Start Menu shortcuts. The macOS DMG in
 - Windows single instance, no console window, administrator manifest, and system Desktop path detection.
 - Separate macOS x64 and arm64 DMGs. The silent launcher hides its Dock icon.
 
-## Relay Injection
+| Area | Capabilities |
+| --- | --- |
+| Provider configuration | Official login, official login plus API, pure API, and aggregate providers; Responses / Chat Completions; model tests, model discovery, Provider Doctor, cc-switch and deep-link imports |
+| Models and context | Per-model context windows, auto-compact limits, `model_catalog_json`, shared config, and per-provider MCP, Skill, and Plugin selection |
+| Session management | Local session scanning, bulk deletion, Markdown export, token usage history, Provider metadata sync, and backups |
+| Codex enhancements | Plugin marketplace and model whitelist handling, session actions, paste fix, Chinese locale, fast startup, conversation width and scroll restore, service-tier controls, Goals, Stepwise, and image overlay |
+| Development workflow | Project move, Upstream worktree creation, thread IDs, and Zed Remote project discovery and opening |
+| Scripts and maintenance | User script installation and toggles, app detection, shortcuts, Watcher, environment cleanup, logs, diagnostics, health checks, and Release updates |
 
-Relay injection is for users who are already logged in with an official ChatGPT account in Codex/ChatGPT and want model requests to go through a custom compatible API.
+Every UI enhancement is independently configurable. Disabling the global enhancement switch still leaves Codex++ available as a provider and launch manager.
 
-The boundary of this hybrid mode is:
+## Provider Modes
 
-- The official ChatGPT/Codex login state still owns Codex App account features and the plugin entry.
-- The relay profile only controls the Base URL, key, and model names used for model requests.
-- The compatible API provider is not tied to any specific vendor; it only needs to match the selected upstream protocol and Codex configuration.
-- Clearing API mode should return Codex to the official login mode so the official account and plugins keep working.
+Official login, mixed API, and pure API are stored and switched separately:
 
-Before applying relay injection, run a minimal preflight:
+| Mode | Purpose | Authentication boundary |
+| --- | --- | --- |
+| Official login | Use only the official ChatGPT / Codex account | Removes custom providers and API keys while preserving official login state |
+| Official login + API | Keep official account features and plugins while routing model requests to a compatible API | Stores the key as a provider bearer token, not in pure API `auth.json` |
+| Pure API | Use a custom Base URL and key without an official account | Maintains independent `config.toml` and API-key auth without mixing official credentials |
+| Aggregate provider | Route across multiple ordinary API providers | Supports failover, conversation round-robin, request round-robin, and weighted round-robin |
 
-1. Make sure Codex has detected the ChatGPT login state and the plugin entry is available.
-2. Confirm the custom Base URL is reachable and supports the selected upstream protocol, such as a Responses-compatible endpoint.
-3. Test the target key with the smallest useful auth probe, such as a model-list request or a short message request.
-4. Only record whether the key exists and whether auth passed. Do not paste real keys into logs, screenshots, or issues.
-5. Make sure `~/.codex/config.toml` has a backup so clearing API mode can safely roll back.
+Each provider can configure Responses or Chat Completions, model lists, a test model, User-Agent, context windows, auto-compact limits, and enabled MCP servers, Skills, and Plugins. Chat Completions can be converted locally into the Responses protocol used by Codex.
 
-In the manager's Relay Injection page:
+Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++ generates a dedicated `model_catalog_json` for Codex.
 
 1. Make sure ChatGPT login status is detected.
 2. Add one or more relay profiles with Base URL and Key.
@@ -81,8 +102,12 @@ In the manager's Relay Injection page:
 
 YOYO Plugin writes configuration similar to this into `~/.codex/config.toml`:
 
-```toml
-model_provider = "CodexPlusPlus"
+- Session delete, bulk delete, Markdown export, and project move actions.
+- Plugin marketplace unlock, plugin auto-expand, and model whitelist handling.
+- Plain-text paste, forced Chinese locale, startup acceleration, and native menu localization.
+- Conversation width, scroll restoration, thread IDs, service-tier controls, and Goals.
+- Stepwise suggestions with a separate API, model, item count, and timeout.
+- Upstream worktrees, Zed Remote, custom image overlays, and user scripts.
 
 [model_providers.CodexPlusPlus]
 name = "CodexPlusPlus"
@@ -120,7 +145,7 @@ The manager's About page can check and start updates. When the silent launcher f
 
 Make sure Codex was launched from the `YOYO Plugin` entry instead of the original Codex entry. You can also inspect the Diagnostics and Logs pages in the manager.
 
-### The plugin says the backend is disconnected
+### Requests fail after switching providers
 
 First test the helper endpoint:
 
@@ -151,15 +176,13 @@ Yes. Releases provide both `macos-x64.dmg` and `macos-arm64.dmg`. Intel Macs sho
 ## Development
 
 ```bash
-# Frontend checks
 cd apps/codex-plus-manager
-npm install
+npm ci
 npm run check
 npm run vite:build
 
-# Rust checks
 cd ../..
-cargo fmt --check
+cargo fmt --all -- --check
 cargo test
 cargo build --release
 ```
