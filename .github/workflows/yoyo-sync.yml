@@ -264,14 +264,21 @@ jobs:
           gh release view "$TAG" --repo "$REPO" --json assets,body,tagName,url > release.json
           node <<'NODE'
           const fs = require("fs");
+          const crypto = require("crypto");
           const r = JSON.parse(fs.readFileSync("release.json", "utf8"));
           const repo = process.env.REPO;
           const tag = r.tagName;
           const version = tag.replace(/^v/i, "");
           const base = `https://github.com/${repo}/releases/download/${tag}`;
+          // sha256 lets the updater verify installers fetched via third-party
+          // CN mirrors; computed from the same local files that were uploaded.
           const assets = (r.assets || []).map(a => a.name)
             .filter(n => n !== "latest.json")
-            .map(n => ({ name: n, url: `${base}/${encodeURIComponent(n)}` }));
+            .map(n => ({
+              name: n,
+              url: `${base}/${encodeURIComponent(n)}`,
+              sha256: crypto.createHash("sha256").update(fs.readFileSync(`dist/${n}`)).digest("hex"),
+            }));
           fs.writeFileSync("latest.json",
             JSON.stringify({ version: `v${version}`, url: r.url, body: r.body || "", assets }, null, 2) + "\n");
           NODE
