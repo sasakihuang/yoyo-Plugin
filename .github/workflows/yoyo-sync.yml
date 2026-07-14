@@ -53,56 +53,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          UP=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")
-          COUNT=$(git rev-list --count "HEAD..upstream/${UPSTREAM_BRANCH}")
-          if [ "$COUNT" = "0" ]; then
-            echo "No new upstream commits."
-            # Keepalive: GitHub disables cron schedules after 60 days without
-            # repo activity; refresh main if upstream has been quiet too long.
-            AGE_DAYS=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
-            if [ "$AGE_DAYS" -ge 50 ]; then
-              git commit --allow-empty -m "yoyo: keepalive (quiet for ${AGE_DAYS} days)"
-              git push origin HEAD
-            fi
-            exit 0
-          fi
-          MARK="<!-- upstream-sha: $UP -->"
-          EXISTING=$(gh issue list --repo "$REPO" --label upstream-update --state open --json number,body --limit 1)
-          NUM=$(echo "$EXISTING" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(d[0]?d[0].number:"")')
-          OLD_BODY=$(echo "$EXISTING" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(d[0]?d[0].body:"")')
-          if [ -n "$NUM" ] && printf '%s' "$OLD_BODY" | grep -qF "$MARK"; then
-            echo "Already notified for $UP (issue #$NUM)."
-            exit 0
-          fi
-          CUR_V=$(awk '/^\[workspace.package\]/{f=1} f&&/^version/{gsub(/[^0-9.]/,"",$0);print;exit}' Cargo.toml)
-          UP_V=$(git show "upstream/${UPSTREAM_BRANCH}:Cargo.toml" | awk '/^\[workspace.package\]/{f=1} f&&/^version/{gsub(/[^0-9.]/,"",$0);print;exit}')
-          BASE=$(git merge-base HEAD "upstream/${UPSTREAM_BRANCH}")
-          {
-            echo "$MARK"
-            echo "上游有 ${COUNT} 个新提交（当前 v${CUR_V} → 上游 v${UP_V}）。"
-            echo
-            echo "### 更新内容"
-            git log --no-merges --pretty='- %s' "HEAD..upstream/${UPSTREAM_BRANCH}" | head -50
-            [ "$(git log --no-merges --oneline "HEAD..upstream/${UPSTREAM_BRANCH}" | wc -l)" -gt 50 ] && echo "- …（更多省略）"
-            echo
-            echo "完整对比：https://github.com/BigPizzaV3/CodexPlusPlus/compare/${BASE:0:12}...${UP:0:12}"
-            echo
-            echo "### 如何确认更新"
-            echo "**直接回复这封邮件（或在本 issue 评论）「更新」即可开始构建发布。**"
-            echo "也可以回复 approve / 同意 / 构建。不回复则一直保持当前版本。"
-          } > body.md
-          gh label create upstream-update --repo "$REPO" -c '#0e8a16' -d 'Upstream update pending approval' 2>/dev/null || true
-          if [ -n "$NUM" ]; then
-            gh issue edit "$NUM" --repo "$REPO" --title "上游更新待确认：v${CUR_V} → v${UP_V}（${COUNT} 个新提交）" --body-file body.md
-            gh issue comment "$NUM" --repo "$REPO" --body "上游又有新提交，简介已更新（现在共 ${COUNT} 个新提交，最新版本 v${UP_V}）。回复「更新」即可构建发布。"
-          else
-            gh issue create --repo "$REPO" --label upstream-update \
-              --title "上游更新待确认：v${CUR_V} → v${UP_V}（${COUNT} 个新提交）" \
-              --body-file body.md
-          fi
-          echo "Proposal issue created/updated; waiting for approval."
+          UPSTREAM_REF: upstream/${{ env.UPSTREAM_BRANCH }}
+        # Builds the proposal issue: commit list, promo/ads scan of the diff,
+        # apply-yoyo.sh precheck on the merged tree, and old-vs-new page
+        # screenshots (best effort). See scripts/propose-update.sh.
+        run: bash scripts/propose-update.sh
       - name: Merge upstream (approved build)
         id: merge
         if: github.event_name == 'workflow_dispatch'
