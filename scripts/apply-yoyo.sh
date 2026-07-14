@@ -85,7 +85,14 @@ _gone "$APP" 't.me/'
 _gone "$APP" '/issues"'
 
 echo ">> [9/10] patch: brand badge"
-_rep "$APP" '<div className="brand-mark">C++</div>' '<div className="brand-mark" style={{ fontSize: "11px", letterSpacing: "-0.3px" }}>YOYO</div>'
+# Upstream removed the brand-mark badge (2026-07-14); the visible title is now
+# plain "Codex++" text, which step 10 rebrands. Keep a guard: "C++" is NOT
+# "Codex++", so if the badge ever comes back step 10 would miss it and the
+# sidebar would ship a C++ badge — fail loudly instead.
+if grep -qF '"brand-mark"' "$APP"; then
+  echo "ANCHOR CHANGED: brand-mark badge is back in App.tsx — re-add the badge patch (step 9)" >&2
+  exit 5
+fi
 
 echo ">> [10/10] patch: brand strings -> $BRAND"
 grep -rlIF 'Codex++' apps crates assets scripts \

@@ -1,0 +1,45 @@
+name: approve upstream update
+
+# Owner replies 更新/approve on an "upstream-update" issue (replying to the
+# GitHub notification EMAIL posts the comment, so approving from a phone
+# mailbox works) -> dispatch the yoyo-sync build. Only the repository owner
+# can approve; bot comments are ignored (their author_association is not
+# OWNER), so this cannot loop.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  issues: write
+
+jobs:
+  approve:
+    if: >
+      github.event.issue.state == 'open' &&
+      contains(github.event.issue.labels.*.name, 'upstream-update') &&
+      github.event.comment.author_association == 'OWNER'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check keyword and trigger build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          # Email replies quote the original message below the reply — only
+          # look at the first non-empty line for the approval keyword.
+          FIRST=$(printf '%s' "$COMMENT" | sed -e 's/\r$//' | grep -m1 -v '^[[:space:]]*$' | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+          case "$FIRST" in
+            更新|同意|确认|构建|发布|approve|approved|yes|ok|build|lgtm)
+              echo "Approved via keyword: $FIRST" ;;
+            *)
+              echo "No approval keyword on first line ('$FIRST') — ignoring."
+              exit 0 ;;
+          esac
+          gh workflow run yoyo-sync.yml --repo "$REPO" --ref main
+          gh issue comment "$ISSUE" --repo "$REPO" \
+            --body "✅ 已收到确认，构建已开始：https://github.com/${REPO}/actions/workflows/yoyo-sync.yml — 发布完成后本 issue 会自动关闭。"
