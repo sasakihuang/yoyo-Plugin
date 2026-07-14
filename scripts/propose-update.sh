@@ -85,32 +85,33 @@ if [ "$PRECHECK_STATUS" = "✅ 通过" ]; then
 fi
 
 # ---------- 3. old-vs-new page screenshots (best effort, never blocks) ----------
-SHOTS_SECTION=""
-set +e
-(
-  set -e
+# Screenshots are MANDATORY: if they cannot be produced, this run fails
+# loudly (workflow failure alert) and the next scheduled run retries — an
+# approval email without screenshots is never sent. Sole exception: the
+# patch precheck failed, so the new tree cannot be built at all; the email
+# then says so explicitly instead of carrying screenshots.
+if [ "$PRECHECK_STATUS" = "✅ 通过" ]; then
   cd "$WORK"
   mkdir -p tool && cd tool
-  npm init -y >/dev/null 2>&1
-  npm install --no-audit --no-fund playwright pixelmatch@5 pngjs >/dev/null 2>&1
-  npx playwright install --with-deps chromium >/dev/null 2>&1
+  npm init -y >/dev/null
+  npm install --no-audit --no-fund playwright pixelmatch@5 pngjs >/dev/null
+  npx playwright install --with-deps chromium >/dev/null
   cd "$WORK"
 
   git worktree add --detach "$WORK/current" HEAD >/dev/null
-  (cd "$WORK/current" && REPO_SLUG="$REPO" BRAND="${BRAND:-YOYO Plugin}" GITHUB_WORKSPACE="$WORK/current" bash scripts/apply-yoyo.sh >/dev/null 2>&1)
+  (cd "$WORK/current" && REPO_SLUG="$REPO" BRAND="${BRAND:-YOYO Plugin}" GITHUB_WORKSPACE="$WORK/current" bash scripts/apply-yoyo.sh >/dev/null)
   for TREE in current merged; do
-    (cd "$WORK/$TREE/apps/codex-plus-manager" && npm install --package-lock=false --no-audit --no-fund >/dev/null 2>&1 && npm run vite:build >/dev/null 2>&1)
+    (cd "$WORK/$TREE/apps/codex-plus-manager" && npm install --package-lock=false --no-audit --no-fund >/dev/null 2>&1 && npm run vite:build >/dev/null)
   done
   cd "$WORK/tool"
   node "$GITHUB_WORKSPACE/scripts/ui-preview.mjs" "$WORK/current/apps/codex-plus-manager/dist" "$WORK/shots-old"
   node "$GITHUB_WORKSPACE/scripts/ui-preview.mjs" "$WORK/merged/apps/codex-plus-manager/dist" "$WORK/shots-new"
   node "$GITHUB_WORKSPACE/scripts/ui-compare.mjs" "$WORK/shots-old" "$WORK/shots-new" "$WORK/uidiff.json"
-)
-SHOT_RC=$?
-set -e
+  cd "$WORK"
 
-if [ "$SHOT_RC" = "0" ] && [ -f "$WORK/uidiff.json" ]; then
-  # Publish changed pages' images on an orphan branch; issues/emails render raw URLs.
+  # Publish images on an orphan branch; issues/emails render the raw URLs.
+  # When nothing changed, still publish one new-version sample page as the
+  # mandatory visual proof that the comparison actually ran.
   PREV="ui-preview/${UP:0:12}"
   git worktree add --detach "$WORK/preview" HEAD >/dev/null
   (
@@ -130,29 +131,44 @@ if [ "$SHOT_RC" = "0" ] && [ -f "$WORK/uidiff.json" ]; then
         if (r.newFile) { fs.copyFileSync(r.newFile, path.join(process.env.P, slug + "-new.png")); entry.new = slug + "-new.png"; }
         out.push(entry);
       }
+      if (out.length === 0) {
+        const manifest = JSON.parse(fs.readFileSync(process.env.W + "/shots-new/pages.json", "utf8"));
+        const first = manifest.find((m) => m.file);
+        if (!first) { console.error("no captured pages to sample"); process.exit(1); }
+        fs.copyFileSync(path.join(process.env.W, "shots-new", first.file), path.join(process.env.P, "sample-new.png"));
+        out.push({ label: first.label, status: "sample", new: "sample-new.png", total: manifest.length });
+      }
       fs.writeFileSync(process.env.W + "/changed.json", JSON.stringify(out));
     '
-    git add "$PREV" && git commit -qm "ui preview for ${UP:0:12}" \
-      && git push -f origin ui-preview-tmp:ui-preview
-  ) && {
-    RAWBASE="https://raw.githubusercontent.com/${REPO}/ui-preview/${PREV}"
-    SHOTS_SECTION=$(W="$WORK" RAWBASE="$RAWBASE" node -e '
-      const fs = require("fs");
-      const changed = JSON.parse(fs.readFileSync(process.env.W + "/changed.json", "utf8"));
-      const base = process.env.RAWBASE;
-      if (!changed.length) { console.log("界面逐页对比：**没有可见变化**（仅代码内部改动）。"); process.exit(0); }
-      const lines = [];
+    git add "$PREV"
+    git commit -qm "ui preview for ${UP:0:12}"
+    git push -f origin ui-preview-tmp:ui-preview
+  )
+  RAWBASE="https://raw.githubusercontent.com/${REPO}/ui-preview/${PREV}"
+  SHOTS_SECTION=$(W="$WORK" RAWBASE="$RAWBASE" node -e '
+    const fs = require("fs");
+    const changed = JSON.parse(fs.readFileSync(process.env.W + "/changed.json", "utf8"));
+    const base = process.env.RAWBASE;
+    const lines = [];
+    if (changed.length === 1 && changed[0].status === "sample") {
+      const s = changed[0];
+      lines.push(`界面逐页对比：全部 ${s.total} 页与当前版本逐像素一致，**没有可见变化**（仅代码内部改动）。`);
+      lines.push(`新版「${s.label}」抽样截图（核验凭证）：`);
+      lines.push(`![${s.label} 新版抽样](${base}/${s.new})`);
+    } else {
       for (const r of changed) {
         const tag = r.status === "new" ? "新增页面" : r.status === "removed" ? "页面移除" : `有变化（差异 ${r.diffPct}%）`;
         lines.push(`#### ${r.label} — ${tag}`);
         if (r.old) lines.push(`旧版：\n![${r.label} 旧版](${base}/${r.old})`);
         if (r.new) lines.push(`新版：\n![${r.label} 新版](${base}/${r.new})`);
       }
-      console.log(lines.join("\n"));
-    ')
-  }
+    }
+    console.log(lines.join("\n"));
+  ')
+  [ -n "$SHOTS_SECTION" ] || { echo "screenshot section came out empty — refusing to send an incomplete proposal" >&2; exit 9; }
+else
+  SHOTS_SECTION="❌ 去广告补丁预检失败，新版本当前无法构建，因此无法生成界面截图。请先修复 apply-yoyo.sh 后再确认（此时回复「更新」构建也会失败）。"
 fi
-[ -n "$SHOTS_SECTION" ] || SHOTS_SECTION="⚠️ 本次截图对比未能生成（不影响其余检查）；可在确认前手动核对界面。"
 
 # ---------- 4. compose + create/update the issue ----------
 {
