@@ -1,10 +1,15 @@
 name: yoyo sync & build
 
 # Build & publish YOYO Plugin installers (Windows + macOS x64/arm64).
-# On a schedule (every 2h) or a manual dispatch: refresh sources, build, and
-# publish the installers as the "latest" release + latest.json so the in-app
-# updater offers a one-click update.
-# Every 2 hours (UTC; "0 */2 * * *"). GitHub cron is UTC and best-effort.
+#
+# Two modes:
+#  - schedule (every 2h): CHECK ONLY. If upstream has new commits, open/update
+#    an "upstream-update" issue with a summary (GitHub emails it to the owner)
+#    and stop. Nothing is merged or built until the owner approves.
+#  - workflow_dispatch: APPROVED BUILD. Merge upstream, build all platforms,
+#    publish the release + latest.json. Triggered by yoyo-approve.yml when the
+#    owner replies 更新/approve to the issue (email reply works), or manually.
+# GitHub cron is UTC and best-effort.
 
 on:
   schedule:
@@ -30,6 +35,7 @@ jobs:
     outputs:
       changed: ${{ steps.merge.outputs.changed }}
       version: ${{ steps.ver.outputs.version }}
+      sha: ${{ steps.merge.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,35 +44,115 @@ jobs:
         run: |
           git config user.name "yoyo-bot"
           git config user.email "yoyo-bot@users.noreply.github.com"
-      - name: Merge upstream
-        id: merge
+      - name: Fetch upstream
         run: |
-          set -euo pipefail
           git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
           git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+      - name: Propose update for approval (schedule mode)
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          UP=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")
+          COUNT=$(git rev-list --count "HEAD..upstream/${UPSTREAM_BRANCH}")
+          if [ "$COUNT" = "0" ]; then
+            echo "No new upstream commits."
+            # Keepalive: GitHub disables cron schedules after 60 days without
+            # repo activity; refresh main if upstream has been quiet too long.
+            AGE_DAYS=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+            if [ "$AGE_DAYS" -ge 50 ]; then
+              git commit --allow-empty -m "yoyo: keepalive (quiet for ${AGE_DAYS} days)"
+              git push origin HEAD
+            fi
+            exit 0
+          fi
+          MARK="<!-- upstream-sha: $UP -->"
+          EXISTING=$(gh issue list --repo "$REPO" --label upstream-update --state open --json number,body --limit 1)
+          NUM=$(echo "$EXISTING" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(d[0]?d[0].number:"")')
+          OLD_BODY=$(echo "$EXISTING" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(d[0]?d[0].body:"")')
+          if [ -n "$NUM" ] && printf '%s' "$OLD_BODY" | grep -qF "$MARK"; then
+            echo "Already notified for $UP (issue #$NUM)."
+            exit 0
+          fi
+          CUR_V=$(awk '/^\[workspace.package\]/{f=1} f&&/^version/{gsub(/[^0-9.]/,"",$0);print;exit}' Cargo.toml)
+          UP_V=$(git show "upstream/${UPSTREAM_BRANCH}:Cargo.toml" | awk '/^\[workspace.package\]/{f=1} f&&/^version/{gsub(/[^0-9.]/,"",$0);print;exit}')
+          BASE=$(git merge-base HEAD "upstream/${UPSTREAM_BRANCH}")
+          {
+            echo "$MARK"
+            echo "上游有 ${COUNT} 个新提交（当前 v${CUR_V} → 上游 v${UP_V}）。"
+            echo
+            echo "### 更新内容"
+            git log --no-merges --pretty='- %s' "HEAD..upstream/${UPSTREAM_BRANCH}" | head -50
+            [ "$(git log --no-merges --oneline "HEAD..upstream/${UPSTREAM_BRANCH}" | wc -l)" -gt 50 ] && echo "- …（更多省略）"
+            echo
+            echo "完整对比：https://github.com/BigPizzaV3/CodexPlusPlus/compare/${BASE:0:12}...${UP:0:12}"
+            echo
+            echo "### 如何确认更新"
+            echo "**直接回复这封邮件（或在本 issue 评论）「更新」即可开始构建发布。**"
+            echo "也可以回复 approve / 同意 / 构建。不回复则一直保持当前版本。"
+          } > body.md
+          gh label create upstream-update --repo "$REPO" -c '#0e8a16' -d 'Upstream update pending approval' 2>/dev/null || true
+          if [ -n "$NUM" ]; then
+            gh issue edit "$NUM" --repo "$REPO" --title "上游更新待确认：v${CUR_V} → v${UP_V}（${COUNT} 个新提交）" --body-file body.md
+            gh issue comment "$NUM" --repo "$REPO" --body "上游又有新提交，简介已更新（现在共 ${COUNT} 个新提交，最新版本 v${UP_V}）。回复「更新」即可构建发布。"
+          else
+            gh issue create --repo "$REPO" --label upstream-update \
+              --title "上游更新待确认：v${CUR_V} → v${UP_V}（${COUNT} 个新提交）" \
+              --body-file body.md
+          fi
+          echo "Proposal issue created/updated; waiting for approval."
+      - name: Merge upstream (approved build)
+        id: merge
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
           BEFORE=$(git rev-parse HEAD)
-          git merge -X ours --no-edit -m "yoyo: sync upstream $(date -u +%FT%TZ)" "upstream/${UPSTREAM_BRANCH}"
+          if ! git merge -X ours --no-edit -m "yoyo: sync upstream $(date -u +%FT%TZ)" "upstream/${UPSTREAM_BRANCH}"; then
+            # -X ours resolves content conflicts only; path conflicts under
+            # .github/workflows (which we pin to ours below) are auto-resolved,
+            # anything else needs a human.
+            OTHER=$(git diff --name-only --diff-filter=U | grep -v '^\.github/workflows/' || true)
+            if [ -n "$OTHER" ]; then
+              echo "Unresolvable merge conflicts:" >&2; echo "$OTHER" >&2; exit 1
+            fi
+            git diff --name-only --diff-filter=U | while IFS= read -r f; do
+              git rm -f -q --ignore-unmatch -- "$f"
+            done
+            git commit --no-edit --no-verify
+          fi
+          # GITHUB_TOKEN cannot push changes under .github/workflows/ — keep
+          # our own CI files and drop upstream's (added files included).
+          if ! git diff --quiet "$BEFORE" HEAD -- .github/workflows; then
+            git rm -r -f -q --ignore-unmatch -- .github/workflows
+            git checkout "$BEFORE" -- .github/workflows
+            git commit --amend --no-edit --no-verify
+            echo "Kept our own .github/workflows."
+          fi
           AFTER=$(git rev-parse HEAD)
-          CHANGED=false
           if [ "$BEFORE" != "$AFTER" ]; then
             git push origin HEAD
-            CHANGED=true
             echo "Synced upstream changes."
           else
-            echo "No upstream changes."
+            echo "No upstream changes; rebuilding current tree."
           fi
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            CHANGED=true
-            echo "Manual dispatch -> forcing build."
-          fi
-          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          # Build jobs must check out exactly this commit — the default ref
+          # pins to the pre-merge trigger SHA and would build a stale tree.
+          echo "sha=$AFTER" >> "$GITHUB_OUTPUT"
       - name: Resolve version
         id: ver
+        if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
           V=$(awk '/^\[workspace.package\]/{f=1} f&&/^version/{gsub(/[^0-9.]/,"",$0);print;exit}' Cargo.toml)
+          case "$V" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "Could not parse version from Cargo.toml (got: '$V')" >&2; exit 3 ;;
+          esac
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "Upstream version: $V"
+          echo "Version: $V"
 
   windows:
     needs: sync
@@ -74,6 +160,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.sha }} # post-merge commit, not the trigger SHA
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -123,6 +211,8 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.sha }} # post-merge commit, not the trigger SHA
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -174,19 +264,36 @@ jobs:
           gh release view "$TAG" --repo "$REPO" --json assets,body,tagName,url > release.json
           node <<'NODE'
           const fs = require("fs");
+          const crypto = require("crypto");
           const r = JSON.parse(fs.readFileSync("release.json", "utf8"));
           const repo = process.env.REPO;
           const tag = r.tagName;
           const version = tag.replace(/^v/i, "");
           const base = `https://github.com/${repo}/releases/download/${tag}`;
+          // sha256 lets the updater verify installers fetched via third-party
+          // CN mirrors; computed from the same local files that were uploaded.
           const assets = (r.assets || []).map(a => a.name)
             .filter(n => n !== "latest.json")
-            .map(n => ({ name: n, url: `${base}/${encodeURIComponent(n)}` }));
+            .map(n => ({
+              name: n,
+              url: `${base}/${encodeURIComponent(n)}`,
+              sha256: crypto.createHash("sha256").update(fs.readFileSync(`dist/${n}`)).digest("hex"),
+            }));
           fs.writeFileSync("latest.json",
             JSON.stringify({ version: `v${version}`, url: r.url, body: r.body || "", assets }, null, 2) + "\n");
           NODE
           gh release upload "$TAG" latest.json --clobber --repo "$REPO"
           echo "Published $TAG as latest."
+      - name: Close approval issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.sync.outputs.version }}
+        run: |
+          gh issue list --repo "$REPO" --label upstream-update --state open --json number --jq '.[].number' \
+            | while read -r n; do
+                gh issue close "$n" --repo "$REPO" --comment "✅ 已构建并发布 v${VERSION}：https://github.com/${REPO}/releases/tag/v${VERSION}" || true
+              done
 
   notify:
     needs: [sync, windows, macos, release]
