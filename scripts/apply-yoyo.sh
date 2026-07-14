@@ -68,7 +68,14 @@ grep -qF 'jojocode-overview' "$APP" || { echo "ANCHOR MISSING: jojocode-overview
 perl -0777 -i -pe 's{\s*<Panel className="jojocode-overview">.*?</Panel>}{}s' "$APP"
 _gone "$APP" 'jojocode-overview'
 
-echo ">> [8/11] patch: about panel + links"
+echo ">> [8/11] patch: promo links & CTAs (about panel, community links, star CTA)"
+# Script market: upstream turned the script homepage button into a GitHub
+# "Star 支持作者" CTA (#1494). Force the neutral 主页 variant — the homepage
+# link stays functional, the star solicitation never renders.
+_rep "$APP" \
+  'const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;' \
+  'const isGitHubHomepage = false;'
+grep -qF 'const isGitHubHomepage = false;' "$APP" || { echo "star CTA neutralize FAILED" >&2; exit 7; }
 # injected menu: drop rows by stable data-attr (text-agnostic)
 for KEY in discord telegram issue; do
   perl -0777 -i -pe 's{\s*<div class="codex-plus-row">\s*<div><div class="codex-plus-row-title">[^<]*</div><div class="codex-plus-row-description">[^<]*</div></div>\s*<button[^>]*data-codex-plus-'"$KEY"'[^>]*>[^<]*</button>\s*</div>}{}sg' "$INJ"
