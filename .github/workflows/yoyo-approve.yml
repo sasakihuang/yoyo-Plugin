@@ -40,6 +40,6 @@ jobs:
               echo "No approval keyword on first line ('$FIRST') — ignoring."
               exit 0 ;;
           esac
-          gh workflow run yoyo-sync.yml --repo "$REPO" --ref main
+          gh workflow run yoyo-sync.yml --repo "$REPO" --ref main -f action=build
           gh issue comment "$ISSUE" --repo "$REPO" \
             --body "✅ 已收到确认，构建已开始：https://github.com/${REPO}/actions/workflows/yoyo-sync.yml — 发布完成后本 issue 会自动关闭。"
