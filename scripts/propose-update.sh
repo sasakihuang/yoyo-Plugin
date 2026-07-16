@@ -41,33 +41,53 @@ UP_V=$(git show "$UPSTREAM_REF:Cargo.toml" | awk '/^\[workspace.package\]/{f=1} 
 BASE=$(git merge-base HEAD "$UPSTREAM_REF")
 
 # ---------- 1. promo / traffic-driving scan over ADDED lines ----------
+# Two tiers, because upstream keeps a big sponsor table in README that never
+# reaches the installer — flagging it every time would bury the real signal:
+#   SHIPPED  = apps/ crates/ assets/ (non-test) -> compiled/bundled into the
+#              app; promo here is what actually needs the transform to catch.
+#   REPODOCS = README/docs/.github/other -> repo-facing only, informational.
 # Track the current file from diff headers so hits carry their location.
-git diff --unified=0 "HEAD..$UPSTREAM_REF" -- . ':!package-lock.json' > "$WORK/up.diff" || true
+# Exclude lockfiles at ANY depth: the plain :!package-lock.json only matches
+# root, letting apps/codex-plus-manager/package-lock.json (95 KB of churn)
+# pollute the scan with false positives.
+git diff --unified=0 "HEAD..$UPSTREAM_REF" -- . \
+  ':(glob)!**/package-lock.json' ':(glob)!**/pnpm-lock.yaml' ':(glob)!**/yarn.lock' \
+  > "$WORK/up.diff" || true
 PROMO_RE='discord\.gg|t\.me/|qq\.(com|cn)|jq\.qq\.com|weixin|wechat|公众号|微信群|QQ群|二维码|收款|赞助|打赏|喝咖啡|请作者|sponsor|donat|bilibili|b23\.tv|douyin|抖音|快手|小红书|xiaohongshu|推广|广告|邀请码|返利|优惠码|aff=|utm_|推荐内容|官方中转|\bStar\b|点个 ?[Ss]tar|星标|支持作者'
-awk -v re="$PROMO_RE" '
+awk -v re="$PROMO_RE" -v ship="$WORK/promo_shipped.md" -v docs="$WORK/promo_repodocs.md" '
+  function shipped(f) { return (f ~ /^(apps|crates|assets)\//) && (f !~ /\/tests?\//) && (f !~ /\.(md|markdown)$/) }
   /^\+\+\+ b\// { file = substr($0, 7); next }
   /^\+/ && $0 !~ /^\+\+\+/ {
     line = substr($0, 2)
     if (line ~ re) {
       gsub(/[[:space:]]+/, " ", line)
-      printf "- `%s`: %s\n", file, substr(line, 1, 160)
+      out = sprintf("- `%s`: %s\n", file, substr(line, 1, 160))
+      if (shipped(file)) { if (ns++ < 25) printf "%s", out >> ship }
+      else { if (nd++ < 15) printf "%s", out >> docs }
     }
   }
-' "$WORK/up.diff" | head -20 > "$WORK/promo_hits.md" || true
+' "$WORK/up.diff" || true
 
-# New external domains introduced by the diff (not present in the current tree)
-grep '^+' "$WORK/up.diff" | grep -v '^+++' \
-  | grep -oE 'https?://[a-zA-Z0-9.-]+' | sed 's#https\?://##' | sort -u > "$WORK/domains_new.txt" || true
+# New external domains introduced INTO SHIPPED CODE (README/doc links ignored).
+awk '
+  function shipped(f) { return (f ~ /^(apps|crates|assets)\//) && (f !~ /\/tests?\//) && (f !~ /\.(md|markdown)$/) }
+  /^\+\+\+ b\// { file = substr($0, 7); next }
+  /^\+/ && $0 !~ /^\+\+\+/ && shipped(file) { print }
+' "$WORK/up.diff" | grep -oE 'https?://[a-zA-Z0-9.-]+' | sed 's#https\?://##' | sort -u > "$WORK/domains_new.txt" || true
 : > "$WORK/domains_report.txt"
 while IFS= read -r d; do
   [ -n "$d" ] || continue
+  case "$d" in raw.githubusercontent.com|github.com|api.github.com|gh-proxy.com|ghfast.top|gh.llkk.cc) continue;; esac
   if ! grep -rqF "$d" apps crates assets scripts --include='*.rs' --include='*.ts' --include='*.tsx' --include='*.js' --include='*.json' 2>/dev/null; then
     echo "- $d" >> "$WORK/domains_report.txt"
   fi
 done < "$WORK/domains_new.txt"
 
-# Newly added image/media assets (potential ad creatives)
-git diff --name-status "HEAD..$UPSTREAM_REF" | awk '$1=="A" && $2 ~ /\.(png|jpe?g|svg|gif|webp|ico)$/ { print "- `" $2 "`" }' | head -15 > "$WORK/new_assets.md" || true
+# Newly added image/media assets under SHIPPED paths (potential ad creatives).
+# docs/ sponsor logos are excluded — they are not bundled into the installer.
+git diff --name-status "HEAD..$UPSTREAM_REF" \
+  | awk '$1=="A" && $2 ~ /^(apps|crates|assets)\// && $2 ~ /\.(png|jpe?g|svg|gif|webp|ico)$/ { print "- `" $2 "`" }' \
+  | head -15 > "$WORK/new_assets.md" || true
 
 # ---------- 2. apply-yoyo.sh precheck on the merged tree ----------
 PRECHECK_STATUS="✅ 通过"
@@ -176,27 +196,37 @@ fi
   echo "上游有 ${COUNT} 个新提交（当前 v${CUR_V} → 上游 v${UP_V}）。"
   echo
   echo "### 更新内容"
-  git log --no-merges --pretty='- %s' "HEAD..$UPSTREAM_REF" | head -50
+  # `|| true`: head -50 closes the pipe; with >50 commits git log takes SIGPIPE
+  # (141) and, under set -euo pipefail, would abort the whole run right before
+  # the issue is created — a first-ever audit is almost always >50 behind.
+  git log --no-merges --pretty='- %s' "HEAD..$UPSTREAM_REF" | head -50 || true
   [ "$(git log --no-merges --oneline "HEAD..$UPSTREAM_REF" | wc -l)" -gt 50 ] && echo "- …（更多省略）"
   echo
   echo "完整对比：https://github.com/BigPizzaV3/CodexPlusPlus/compare/${BASE:0:12}...${UP:0:12}"
   echo
   echo "### 引流/广告自动检查"
-  if [ -s "$WORK/promo_hits.md" ]; then
-    echo "⚠️ 新增代码中发现以下可疑内容（请重点审核）："
-    cat "$WORK/promo_hits.md"
+  if [ -s "$WORK/promo_shipped.md" ]; then
+    echo "⚠️ **进入 App 的代码中发现可疑内容（重点审核，去广告补丁可能需要新增规则）：**"
+    cat "$WORK/promo_shipped.md"
   else
-    echo "✅ 新增代码中未发现广告/引流特征词。"
+    echo "✅ 进入 App 的代码（apps/crates/assets）中未发现广告/引流特征词。"
   fi
   if [ -s "$WORK/domains_report.txt" ]; then
     echo
-    echo "本次新引入的外部域名："
+    echo "App 代码中新引入的外部域名（README/文档链接已忽略）："
     cat "$WORK/domains_report.txt"
   fi
   if [ -s "$WORK/new_assets.md" ]; then
     echo
-    echo "新增图片资源（可能是广告素材，见下方截图核对）："
+    echo "App 内新增图片资源（可能是广告素材，见下方截图核对）："
     cat "$WORK/new_assets.md"
+  fi
+  if [ -s "$WORK/promo_repodocs.md" ]; then
+    echo
+    echo "<details><summary>ℹ️ 仅仓库文档（README/docs）中的引流内容 — 不进 App，仅供参考</summary>"
+    echo
+    cat "$WORK/promo_repodocs.md"
+    echo "</details>"
   fi
   echo
   echo "### 去广告补丁预检"
