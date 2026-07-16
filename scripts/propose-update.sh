@@ -13,6 +13,11 @@ UPSTREAM_REF="${UPSTREAM_REF:-upstream/main}"
 REPO="${REPO:?}"
 WORK="${RUNNER_TEMP:-/tmp}/yoyo-propose"
 rm -rf "$WORK" && mkdir -p "$WORK"
+# Lock the repo root now (cwd is the checkout at entry). The screenshot stage
+# cd's into $WORK to run npm/Playwright, so later `git worktree add` / `git
+# log` must NOT rely on cwd — always target the repo explicitly.
+REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" worktree prune # clear any stale registration from a prior run
 
 UP=$(git rev-parse "$UPSTREAM_REF")
 COUNT=$(git rev-list --count "HEAD..$UPSTREAM_REF")
@@ -91,7 +96,7 @@ git diff --name-status "HEAD..$UPSTREAM_REF" \
 
 # ---------- 2. apply-yoyo.sh precheck on the merged tree ----------
 PRECHECK_STATUS="✅ 通过"
-git worktree add --detach "$WORK/merged" HEAD >/dev/null
+git -C "$REPO_DIR" worktree add --detach "$WORK/merged" HEAD >/dev/null
 (
   cd "$WORK/merged"
   git -c user.name=yoyo-bot -c user.email=yoyo-bot@users.noreply.github.com \
@@ -118,22 +123,22 @@ if [ "$PRECHECK_STATUS" = "✅ 通过" ]; then
   npx playwright install --with-deps chromium >/dev/null
   cd "$WORK"
 
-  git worktree add --detach "$WORK/current" HEAD >/dev/null
+  git -C "$REPO_DIR" worktree add --detach "$WORK/current" HEAD >/dev/null
   (cd "$WORK/current" && REPO_SLUG="$REPO" BRAND="${BRAND:-YOYO Plugin}" GITHUB_WORKSPACE="$WORK/current" bash scripts/apply-yoyo.sh >/dev/null)
   for TREE in current merged; do
     (cd "$WORK/$TREE/apps/codex-plus-manager" && npm install --package-lock=false --no-audit --no-fund >/dev/null 2>&1 && npm run vite:build >/dev/null)
   done
   cd "$WORK/tool"
-  node "$GITHUB_WORKSPACE/scripts/ui-preview.mjs" "$WORK/current/apps/codex-plus-manager/dist" "$WORK/shots-old"
-  node "$GITHUB_WORKSPACE/scripts/ui-preview.mjs" "$WORK/merged/apps/codex-plus-manager/dist" "$WORK/shots-new"
-  node "$GITHUB_WORKSPACE/scripts/ui-compare.mjs" "$WORK/shots-old" "$WORK/shots-new" "$WORK/uidiff.json"
+  node "$REPO_DIR/scripts/ui-preview.mjs" "$WORK/current/apps/codex-plus-manager/dist" "$WORK/shots-old"
+  node "$REPO_DIR/scripts/ui-preview.mjs" "$WORK/merged/apps/codex-plus-manager/dist" "$WORK/shots-new"
+  node "$REPO_DIR/scripts/ui-compare.mjs" "$WORK/shots-old" "$WORK/shots-new" "$WORK/uidiff.json"
   cd "$WORK"
 
   # Publish images on an orphan branch; issues/emails render the raw URLs.
   # When nothing changed, still publish one new-version sample page as the
   # mandatory visual proof that the comparison actually ran.
   PREV="ui-preview/${UP:0:12}"
-  git worktree add --detach "$WORK/preview" HEAD >/dev/null
+  git -C "$REPO_DIR" worktree add --detach "$WORK/preview" HEAD >/dev/null
   (
     cd "$WORK/preview"
     git checkout --orphan ui-preview-tmp >/dev/null 2>&1
@@ -191,6 +196,7 @@ else
 fi
 
 # ---------- 4. compose + create/update the issue ----------
+cd "$REPO_DIR" # screenshots left cwd in $WORK; git log below needs the repo
 {
   echo "$MARK"
   echo "上游有 ${COUNT} 个新提交（当前 v${CUR_V} → 上游 v${UP_V}）。"
