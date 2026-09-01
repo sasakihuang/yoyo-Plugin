@@ -2,18 +2,19 @@ name: yoyo sync & build
 
 # Build & publish YOYO Plugin installers (Windows + macOS x64/arm64).
 #
-# Two modes:
-#  - schedule (every 2h): CHECK ONLY. If upstream has new commits, open/update
-#    an "upstream-update" issue with a summary (GitHub emails it to the owner)
-#    and stop. Nothing is merged or built until the owner approves.
-#  - workflow_dispatch: APPROVED BUILD. Merge upstream, build all platforms,
-#    publish the release + latest.json. Triggered by yoyo-approve.yml when the
-#    owner replies 更新/approve to the issue (email reply works), or manually.
-# GitHub cron is UTC and best-effort.
+# AUTOMATIC RUNS ARE PAUSED (owner request, 2026-07-16): the schedule trigger
+# below is commented out, so nothing checks upstream, proposes, or builds on
+# its own. Manual paths still work:
+#  - workflow_dispatch action=propose: generate an upstream-update issue
+#    (report + screenshots) on demand.
+#  - workflow_dispatch action=build: merge upstream, build, publish.
+#  - Replying 更新/approve on an open upstream-update issue still triggers a
+#    build via yoyo-approve.yml (owner-only).
+# To RESUME automation: uncomment the schedule block. Cron is UTC, best-effort.
 
 on:
-  schedule:
-    - cron: "0 */2 * * *"
+  # schedule:
+  #   - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
       action:
